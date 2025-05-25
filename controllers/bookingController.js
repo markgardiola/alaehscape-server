@@ -89,7 +89,7 @@ exports.getAllBookings = (req, res) => {
 
 exports.uploadPaymentReceipt = (req, res) => {
   const { bookingId } = req.body;
-  const receiptImage = req.file ? req.file.filename : null;
+  const receiptImage = req.file.path;
 
   if (!bookingId || !receiptImage) {
     return res.status(400).json({ message: "Missing bookingId or receipt file." });

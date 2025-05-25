@@ -4,16 +4,16 @@ const path = require("path");
 
 exports.createResort = (req, res) => {
   const { name, location, description } = req.body;
-  const image = req.file ? req.file.filename : null;
+  const image_url = req.file.path;
   const rooms = JSON.parse(req.body.rooms);
   const amenities = JSON.parse(req.body.amenities || "[]");
 
-  if (!name || !location || !description || !image || rooms.length === 0) {
+  if (!name || !location || !description || !image_url || rooms.length === 0) {
     return res.status(400).json({ message: 'All fields are required.' });
   }
 
   const resortQuery = 'INSERT INTO resorts (name, location, description, image) VALUES (?, ?, ?, ?)';
-  db.query(resortQuery, [name, location, description, image], (err, result) => {
+  db.query(resortQuery, [name, location, description, image_url], (err, result) => {
     if (err) {
       console.error('Error inserting resort:', err);
       return res.status(500).json({ message: 'Server error while inserting resort.' });
@@ -127,7 +127,7 @@ exports.deleteResort = async (req, res) => {
 exports.updateResort = async (req, res) => {
   const { id } = req.params;
   const { name, location, description } = req.body;
-  const image = req.file ? req.file.filename : null;
+  const image_url = req.file.path;
 
   let rooms = [];
   let amenities = [];
@@ -143,11 +143,11 @@ exports.updateResort = async (req, res) => {
     return res.status(400).json({ message: "All required fields must be filled." });
   }
 
-  const updateFields = image
-    ? [name, location, description, image, id]
+  const updateFields = image_url
+    ? [name, location, description, image_url, id]
     : [name, location, description, id];
 
-  const updateQuery = image
+  const updateQuery = image_url
     ? `UPDATE resorts SET name = ?, location = ?, description = ?, image = ? WHERE id = ?`
     : `UPDATE resorts SET name = ?, location = ?, description = ? WHERE id = ?`;
 
