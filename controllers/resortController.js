@@ -126,8 +126,8 @@ exports.deleteResort = async (req, res) => {
 
 exports.updateResort = async (req, res) => {
   const { id } = req.params;
-  const { name, location, description } = req.body;
-  const image_url = req.file.path;
+  const { name, location, description, existingImage } = req.body;
+  const image_url = req.file ? req.file.path : existingImage;
 
   let rooms = [];
   let amenities = [];
@@ -143,65 +143,54 @@ exports.updateResort = async (req, res) => {
     return res.status(400).json({ message: "All required fields must be filled." });
   }
 
-  const updateFields = image_url
-    ? [name, location, description, image_url, id]
-    : [name, location, description, id];
-
-  const updateQuery = image_url
-    ? `UPDATE resorts SET name = ?, location = ?, description = ?, image = ? WHERE id = ?`
-    : `UPDATE resorts SET name = ?, location = ?, description = ? WHERE id = ?`;
+  const updateQuery = `UPDATE resorts SET name = ?, location = ?, description = ?, image = ? WHERE id = ?`;
+  const updateFields = [name, location, description, image_url, id];
 
   db.query(updateQuery, updateFields, (err) => {
     if (err) {
       console.error("Error updating resort:", err);
       return res.status(500).json({ message: "Error updating resort." });
     }
-
     db.query(`DELETE FROM rooms WHERE resort_id = ?`, [id], (err2) => {
       if (err2) {
         console.error("Error deleting old rooms:", err2);
         return res.status(500).json({ message: "Error updating rooms." });
       }
-
       const roomValues = rooms.map((room) => [id, room.name, room.price]);
-      db.query(
-        `INSERT INTO rooms (resort_id, name, price) VALUES ?`,
-        [roomValues],
-        (err3) => {
-          if (err3) {
-            console.error("Error inserting new rooms:", err3);
-            return res.status(500).json({ message: "Error inserting updated rooms." });
+      db.query(`INSERT INTO rooms (resort_id, name, price) VALUES ?`, [roomValues], (err3) => {
+        if (err3) {
+          console.error("Error inserting new rooms:", err3);
+          return res.status(500).json({ message: "Error inserting updated rooms." });
+        }
+        db.query(`DELETE FROM resort_amenities WHERE resort_id = ?`, [id], (err4) => {
+          if (err4) {
+            console.error("Error deleting old amenities:", err4);
+            return res.status(500).json({ message: "Error updating amenities." });
           }
 
-          db.query(`DELETE FROM resort_amenities WHERE resort_id = ?`, [id], (err4) => {
-            if (err4) {
-              console.error("Error deleting old amenities:", err4);
-              return res.status(500).json({ message: "Error updating amenities." });
-            }
-
-            if (amenities.length > 0) {
-              const amenityValues = amenities.map((item) => [id, item]);
-              db.query(
-                `INSERT INTO resort_amenities (resort_id, amenity) VALUES ?`,
-                [amenityValues],
-                (err5) => {
-                  if (err5) {
-                    console.error("Error inserting new amenities:", err5);
-                    return res.status(500).json({ message: "Error inserting updated amenities." });
-                  }
-
-                  return res.status(200).json({ message: "Resort updated successfully!" });
+          if (amenities.length > 0) {
+            const amenityValues = amenities.map((item) => [id, item]);
+            db.query(
+              `INSERT INTO resort_amenities (resort_id, amenity) VALUES ?`,
+              [amenityValues],
+              (err5) => {
+                if (err5) {
+                  console.error("Error inserting new amenities:", err5);
+                  return res.status(500).json({ message: "Error inserting updated amenities." });
                 }
-              );
-            } else {
-              return res.status(200).json({ message: "Resort updated successfully!" });
-            }
-          });
-        }
-      );
+
+                return res.status(200).json({ message: "Resort updated successfully!" });
+              }
+            );
+          } else {
+            return res.status(200).json({ message: "Resort updated successfully!" });
+          }
+        });
+      });
     });
   });
 };
+
 
 exports.getResortByLocation = (req, res) => {
   const location = req.params.location;
