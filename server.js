@@ -14,7 +14,7 @@ const port = process.env.PORT || 5000;
 
 const allowedOrigins = [
   'http://localhost:5174',
-  'https://alaehscape-booking.vercel.app' // your deployed frontend
+  'https://alaehscape-booking.vercel.app'
 ];
 
 app.use(cors({
