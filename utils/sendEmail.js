@@ -8,6 +8,7 @@ const sendEmail = async (to, subject, html) => {
       user: 'alaehscape@gmail.com',
       pass: process.env.sendMailPass,
     },
+    family: 4,
   });
 
   const mailOptions = {
