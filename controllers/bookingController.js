@@ -66,13 +66,13 @@ exports.getAllBookings = (req, res) => {
   const sql = `
     SELECT 
       bookings.id AS booking_id,
-      user_details.username,
+      users.username,
       resorts.name AS resort_name,
       bookings.check_in,
       bookings.check_out,
       bookings.status
     FROM bookings
-    JOIN user_details ON bookings.user_id = user_details.id
+    JOIN users ON bookings.user_id = users.id
     JOIN resorts ON bookings.resort_id = resorts.id
     ORDER BY bookings.created_at DESC
   `;
@@ -160,7 +160,7 @@ exports.updateBookingStatus = async (req, res) => {
               ud.username,
               r.name AS resort
          FROM bookings b
-         JOIN user_details ud ON ud.id = b.user_id
+         JOIN users ud ON ud.id = b.user_id
          JOIN resorts r        ON r.id = b.resort_id
         WHERE b.id = ?`,
       [id]

@@ -2,7 +2,7 @@ const db = require('../config/connectDB');
 const bcrypt = require('bcrypt');
 
 exports.getTotalUsers = (req, res) => {
-  const query = 'SELECT COUNT(*) AS totalUsers FROM user_details';
+  const query = 'SELECT COUNT(*) AS totalUsers FROM users';
 
   db.query(query, (err, results) => {
     if (err) {
@@ -14,7 +14,7 @@ exports.getTotalUsers = (req, res) => {
 };
 
 exports.getUserInfo = (req, res) => {
-  const sql = "SELECT username, email, phone, address FROM user_details WHERE id = ?";
+  const sql = "SELECT username, email, phone, address FROM users WHERE id = ?";
   db.query(sql, [req.userId], (err, result) => {
     if (err) return res.status(500).json({ message: "DB error" });
     if (result.length === 0) return res.status(404).json({ message: "User not found" });
@@ -27,8 +27,8 @@ exports.updateUser = (req, res) => {
 
   const update = (hashedPassword = null) => {
     const sql = hashedPassword
-      ? "UPDATE user_details SET username=?, email=?, password=?, phone=?, address=? WHERE id=?"
-      : "UPDATE user_details SET username=?, email=?, phone=?, address=? WHERE id=?";
+      ? "UPDATE users SET username=?, email=?, password=?, phone=?, address=? WHERE id=?"
+      : "UPDATE users SET username=?, email=?, phone=?, address=? WHERE id=?";
 
     const params = hashedPassword
       ? [username, email, hashedPassword, phone, address, req.userId]
@@ -53,7 +53,7 @@ exports.updateUser = (req, res) => {
 //admins
 
 exports.getAllUsers = (req, res) => {
-  const query = 'SELECT id, username, email, phone, address FROM user_details';
+  const query = 'SELECT id, username, email, phone, address FROM users';
 
   db.query(query, (err, results) => {
     if (err) {
@@ -74,7 +74,7 @@ exports.adminUpdateUser = (req, res) => {
   }
 
   const sql = `
-    UPDATE user_details
+    UPDATE users
     SET username = ?, email = ?, phone = ?, address = ?, ${password ? "password = ?" : "password = password"}
     WHERE id = ?
   `;
@@ -95,7 +95,7 @@ exports.adminUpdateUser = (req, res) => {
 exports.deleteUser = (req, res) => {
   const userId = req.params.id;
 
-  const sql = "DELETE FROM user_details WHERE id = ?";
+  const sql = "DELETE FROM users WHERE id = ?";
   db.query(sql, [userId], (err, result) => {
     if (err) {
       console.error("Error deleting user:", err);

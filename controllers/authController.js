@@ -7,7 +7,7 @@ const JWT_SECRET_KEY = process.env.JWT;
 exports.register = (req, res) => {
   const { username, email, password } = req.body;
 
-  const checkEmailSql = "SELECT * FROM user_details WHERE email = ?";
+  const checkEmailSql = "SELECT * FROM users WHERE email = ?";
   db.query(checkEmailSql, [email], (err, results) => {
     if (err) return res.status(500).json({ message: "Database error" });
 
@@ -17,7 +17,7 @@ exports.register = (req, res) => {
     bcrypt.hash(password, 10, (err, hash) => {
       if (err) return res.status(500).json({ message: "Hashing error" });
 
-      const insertSql = "INSERT INTO user_details (username, email, password) VALUES (?, ?, ?)";
+      const insertSql = "INSERT INTO users (username, email, password) VALUES (?, ?, ?)";
       db.query(insertSql, [username, email, hash], (err, result) => {
         if (err) return res.status(500).json({ message: "Database error" });
         res.json({ success: "User registered successfully" });
@@ -34,7 +34,7 @@ exports.login = (req, res) => {
     db.query(`SELECT * FROM ${table} WHERE email = ?`, [email], cb);
   };
 
-  checkUser('user_details', (err, result) => {
+  checkUser('users', (err, result) => {
     if (err) return res.status(500).json({ message: "Server error" });
 
     let user = result[0];

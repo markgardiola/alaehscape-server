@@ -9,6 +9,6 @@ const resortImageStorage = new CloudinaryStorage({
   },
 });
 
-const uploadResortImage = multer({ storage: resortImageStorage });
+const uploadResortImages = multer({ storage: resortImageStorage });
 
-module.exports = uploadResortImage;
+module.exports = uploadResortImages;

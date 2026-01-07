@@ -3,48 +3,85 @@ const fs = require("fs");
 const path = require("path");
 
 exports.createResort = (req, res) => {
-  const { name, location, description } = req.body;
-  const image_url = req.file.path;
-  const rooms = JSON.parse(req.body.rooms);
-  const amenities = JSON.parse(req.body.amenities || "[]");
 
-  if (!name || !location || !description || !image_url || rooms.length === 0) {
-    return res.status(400).json({ message: 'All fields are required.' });
+  console.log("REQ.BODY:", req.body);
+  console.log("REQ.FILES:", req.files);
+
+  const { name, location, description } = req.body;
+
+  // Parse rooms and amenities from JSON strings
+  let rooms = [];
+  let amenities = [];
+  try {
+    rooms = JSON.parse(req.body.rooms);
+    amenities = JSON.parse(req.body.amenities || "[]");
+  } catch (error) {
+    return res.status(400).json({ message: "Invalid JSON format for rooms or amenities." });
   }
 
-  const resortQuery = 'INSERT INTO resorts (name, location, description, image) VALUES (?, ?, ?, ?)';
-  db.query(resortQuery, [name, location, description, image_url], (err, result) => {
+  // Validate required fields
+  if (!name || !location || !description || rooms.length === 0) {
+    return res.status(400).json({ message: "All fields and at least one room are required." });
+  }
+
+  if (!req.files || req.files.length === 0) {
+    return res.status(400).json({ message: "At least one image is required." });
+  }
+
+  // Map Cloudinary URLs from uploaded files
+  const imageUrls = req.files.map(file => file.path);
+
+  // Insert resort into `resorts` table
+  const resortQuery = 'INSERT INTO resorts (name, location, description) VALUES (?, ?, ?)';
+  db.query(resortQuery, [name, location, description], (err, result) => {
     if (err) {
-      console.error('Error inserting resort:', err);
-      return res.status(500).json({ message: 'Server error while inserting resort.' });
+      console.error("Error inserting resort:", err);
+      return res.status(500).json({ message: "Server error while inserting resort." });
     }
 
     const resortId = result.insertId;
 
-    const roomQuery = 'INSERT INTO rooms (resort_id, name, price) VALUES ?';
-    const roomValues = rooms.map(room => [resortId, room.name, room.price]);
+    // Insert multiple images into `resort_images`
+    const imageQuery = 'INSERT INTO resort_images (resort_id, image_url) VALUES ?';
+    const imageValues = imageUrls.map(url => [resortId, url]);
 
-    db.query(roomQuery, [roomValues], (err2) => {
-      if (err2) {
-        console.error('Error inserting rooms:', err2);
-        return res.status(500).json({ message: 'Server error while inserting rooms.' });
+    db.query(imageQuery, [imageValues], (errImg) => {
+      if (errImg) {
+        console.error("Error inserting images:", errImg);
+        return res.status(500).json({ message: "Server error while inserting images." });
       }
 
-      if (amenities.length > 0) {
-        const amenityQuery = 'INSERT INTO resort_amenities (resort_id, amenity) VALUES ?';
-        const amenityValues = amenities.map(amenity => [resortId, amenity]);
+      // Insert rooms into `rooms` table
+      const roomQuery = 'INSERT INTO rooms (resort_id, name, price) VALUES ?';
+      const roomValues = rooms.map(room => [resortId, room.name, room.price]);
 
-        db.query(amenityQuery, [amenityValues], (err3) => {
-          if (err3) {
-            console.error('Error inserting amenities:', err3);
-            return res.status(500).json({ message: 'Server error while inserting amenities.' });
-          }
+      db.query(roomQuery, [roomValues], (errRooms) => {
+        if (errRooms) {
+          console.error("Error inserting rooms:", errRooms);
+          return res.status(500).json({ message: "Server error while inserting rooms." });
+        }
 
-          return res.status(201).json({ message: 'Resort created successfully with amenities!' });
-        });
-      } else {
-        return res.status(201).json({ message: 'Resort created successfully!' });
-      }
+        // Insert amenities into `resort_amenities` table if any
+        if (amenities.length > 0) {
+          const amenityQuery = 'INSERT INTO resort_amenities (resort_id, amenity) VALUES ?';
+          const amenityValues = amenities.map(amenity => [resortId, amenity]);
+
+          db.query(amenityQuery, [amenityValues], (errAmenity) => {
+            if (errAmenity) {
+              console.error("Error inserting amenities:", errAmenity);
+              return res.status(500).json({ message: "Server error while inserting amenities." });
+            }
+
+            return res.status(201).json({
+              message: "Resort created successfully with images, rooms, and amenities!"
+            });
+          });
+        } else {
+          return res.status(201).json({
+            message: "Resort created successfully with images and rooms!"
+          });
+        }
+      });
     });
   });
 };
