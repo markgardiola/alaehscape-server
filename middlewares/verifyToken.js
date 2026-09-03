@@ -1,5 +1,5 @@
-const jwt = require('jsonwebtoken');
-const JWT_SECRET_KEY = 'alaehscape2025';
+const jwt = require("jsonwebtoken");
+const JWT_SECRET_KEY = process.env.JWT;
 
 const verifyToken = (req, res, next) => {
   const token = req.headers["authorization"]?.split(" ")[1];
