@@ -1,21 +1,21 @@
 const db = require("../config/connectDB");
-const sendEmail = require('../utils/sendEmail')
-const tplApproved = require('../templates/bookingApproved');
-const tplCancelled = require('../templates/bookingCancelled');
+const sendEmail = require("../utils/sendEmail");
+const tplApproved = require("../templates/bookingApproved");
+const tplCancelled = require("../templates/bookingCancelled");
 
-exports.getTotalBookings = (req, res) => {
-  const query = 'SELECT COUNT(*) AS totalBookings FROM bookings WHERE status = "Confirmed"';
-
-  db.query(query, (err, results) => {
-    if (err) {
-      console.error('Error fetching total resorts:', err);
-      return res.status(500).json({ error: 'Internal Server Error' });
-    }
-    res.json({ totalBookings: results[0].totalBookings });
-  });
+exports.getTotalBookings = async (req, res) => {
+  try {
+    const results = await db.query(
+      "SELECT COUNT(*) AS \"totalBookings\" FROM bookings WHERE status = 'Confirmed'",
+    );
+    res.json({ totalBookings: Number(results[0].totalBookings) });
+  } catch (err) {
+    console.error("Error fetching total bookings:", err);
+    res.status(500).json({ error: "Internal Server Error" });
+  }
 };
 
-exports.submitBooking = (req, res) => {
+exports.submitBooking = async (req, res) => {
   const {
     resortId,
     fullName,
@@ -31,9 +31,10 @@ exports.submitBooking = (req, res) => {
   const userId = req.userId;
 
   const sql = `
-    INSERT INTO bookings 
-    (user_id, resort_id, full_name, email, mobile, address, check_in, check_out, adults, children) 
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO bookings
+    (user_id, resort_id, full_name, email, mobile, address, check_in, check_out, adults, children)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+    RETURNING id
   `;
 
   const values = [
@@ -49,22 +50,22 @@ exports.submitBooking = (req, res) => {
     children,
   ];
 
-  db.query(sql, values, (err, result) => {
-    if (err) {
-      console.error("Booking insert error:", err);
-      return res.status(500).json({ message: "Database error" });
-    }
+  try {
+    const result = await db.query(sql, values);
 
     res.status(201).json({
       message: "Booking submitted successfully",
-      bookingId: result.insertId
+      bookingId: result[0].id,
     });
-  });
+  } catch (err) {
+    console.error("Booking insert error:", err);
+    res.status(500).json({ message: "Database error" });
+  }
 };
 
-exports.getAllBookings = (req, res) => {
+exports.getAllBookings = async (req, res) => {
   const sql = `
-    SELECT 
+    SELECT
       bookings.id AS booking_id,
       users.username,
       resorts.name AS resort_name,
@@ -77,100 +78,101 @@ exports.getAllBookings = (req, res) => {
     ORDER BY bookings.created_at DESC
   `;
 
-  db.query(sql, (err, results) => {
-    if (err) {
-      console.error("Error fetching bookings:", err);
-      return res.status(500).json({ message: "Database error" });
-    }
-
+  try {
+    const results = await db.query(sql);
     res.json(results);
-  });
+  } catch (err) {
+    console.error("Error fetching bookings:", err);
+    res.status(500).json({ message: "Database error" });
+  }
 };
 
-exports.uploadPaymentReceipt = (req, res) => {
+exports.uploadPaymentReceipt = async (req, res) => {
   const { bookingId } = req.body;
   const receiptImage = req.file.path;
 
   if (!bookingId || !receiptImage) {
-    return res.status(400).json({ message: "Missing bookingId or receipt file." });
+    return res
+      .status(400)
+      .json({ message: "Missing bookingId or receipt file." });
   }
 
-  const sql = "UPDATE bookings SET receipt = ? WHERE id = ?";
-
-  db.query(sql, [receiptImage, bookingId], (err, result) => {
-    if (err) {
-      console.error("Receipt upload error:", err);
-      return res.status(500).json({ message: "Database error" });
-    }
-
+  try {
+    await db.query("UPDATE bookings SET receipt = $1 WHERE id = $2", [
+      receiptImage,
+      bookingId,
+    ]);
     return res.status(200).json({ message: "Receipt uploaded successfully!" });
-  });
+  } catch (err) {
+    console.error("Receipt upload error:", err);
+    return res.status(500).json({ message: "Database error" });
+  }
 };
 
-exports.getBookingById = (req, res) => {
+exports.getBookingById = async (req, res) => {
   const bookingId = req.params.id;
 
   const sql = `
-    SELECT 
-      b.*, 
-      r.name AS resort_name 
+    SELECT
+      b.*,
+      r.name AS resort_name
     FROM bookings b
     JOIN resorts r ON b.resort_id = r.id
-    WHERE b.id = ?
+    WHERE b.id = $1
   `;
 
-  db.query(sql, [bookingId], (err, results) => {
-    if (err) {
-      console.error("Error fetching booking:", err);
-      return res.status(500).json({ message: "Database error" });
-    }
+  try {
+    const results = await db.query(sql, [bookingId]);
 
     if (results.length === 0) {
       return res.status(404).json({ message: "Booking not found" });
     }
 
     res.status(200).json(results[0]);
-  });
+  } catch (err) {
+    console.error("Error fetching booking:", err);
+    res.status(500).json({ message: "Database error" });
+  }
 };
 
 exports.updateBookingStatus = async (req, res) => {
   const { id } = req.params;
   const { status } = req.body;
 
-  const allowed = ['Confirmed', 'Cancelled', 'Pending'];
+  const allowed = ["Confirmed", "Cancelled", "Pending"];
   if (!allowed.includes(status))
-    return res.status(400).json({ error: 'Invalid status' });
+    return res.status(400).json({ error: "Invalid status" });
 
   try {
     const result = await db.query(
-      'UPDATE bookings SET status = ? WHERE id = ?',
-      [status, id]
+      "UPDATE bookings SET status = $1 WHERE id = $2 RETURNING id",
+      [status, id],
     );
-    if (result.affectedRows === 0)
-      return res.status(404).json({ error: 'Booking not found' });
+    if (result.length === 0)
+      return res.status(404).json({ error: "Booking not found" });
 
     const rows = await db.query(
       `SELECT b.id,
-              DATE_FORMAT(b.check_in , '%M %e, %Y') AS checkIn,
-              DATE_FORMAT(b.check_out, '%M %e, %Y') AS checkOut,
-              b.adults,                    -- Separate count for adults
-              b.children,                  -- Separate count for children
+              TO_CHAR(b.check_in,  'FMMonth FMDD, YYYY') AS "checkIn",
+              TO_CHAR(b.check_out, 'FMMonth FMDD, YYYY') AS "checkOut",
+              b.adults,
+              b.children,
               b.full_name,
               ud.email,
               ud.username,
               r.name AS resort
          FROM bookings b
          JOIN users ud ON ud.id = b.user_id
-         JOIN resorts r        ON r.id = b.resort_id
-        WHERE b.id = ?`,
-      [id]
+         JOIN resorts r ON r.id = b.resort_id
+        WHERE b.id = $1`,
+      [id],
     );
 
     const booking = rows[0];
 
     let subject, html;
-    if (status === 'Confirmed') {
-      subject = 'Your booking is confirmed! 🎉';
+    if (status === "Confirmed") {
+      subject = "Your booking is confirmed! 🎉";
       html = tplApproved({
         full_name: booking.full_name,
         resort: booking.resort,
@@ -179,8 +181,8 @@ exports.updateBookingStatus = async (req, res) => {
         adults: booking.adults,
         children: booking.children,
       });
-    } else if (status === 'Cancelled') {
-      subject = 'Your booking has been cancelled';
+    } else if (status === "Cancelled") {
+      subject = "Your booking has been cancelled";
       html = tplCancelled({
         full_name: booking.full_name,
         resort: booking.resort,
@@ -189,24 +191,22 @@ exports.updateBookingStatus = async (req, res) => {
 
     if (html) {
       sendEmail(booking.email, subject, html)
-        .then(() =>
-          console.log(`✅ ${status} email sent to ${booking.email}`)
-        )
-        .catch(err => console.error('❌ Email error:', err));
+        .then(() => console.log(`✅ ${status} email sent to ${booking.email}`))
+        .catch((err) => console.error("❌ Email error:", err));
     }
 
     res.json({ message: `Booking ${status}` });
   } catch (err) {
-    console.error('Error updating booking status:', err);
-    res.status(500).json({ error: 'Failed to update booking status' });
+    console.error("Error updating booking status:", err);
+    res.status(500).json({ error: "Failed to update booking status" });
   }
 };
 
-exports.getUserBooking = (req, res) => {
+exports.getUserBooking = async (req, res) => {
   const userId = req.params.userId;
 
   const query = `
-    SELECT 
+    SELECT
       b.id,
       r.name AS resort_name,
       b.check_in,
@@ -217,30 +217,33 @@ exports.getUserBooking = (req, res) => {
       b.created_at
     FROM bookings b
     JOIN resorts r ON b.resort_id = r.id
-    WHERE b.user_id = ?
+    WHERE b.user_id = $1
     ORDER BY b.created_at DESC
   `;
 
-  db.query(query, [userId], (err, results) => {
-    if (err) {
-      console.error("Error fetching bookings:", err);
-      return res.status(500).json({ error: "Internal server error" });
-    }
+  try {
+    const results = await db.query(query, [userId]);
     res.json(results);
-  });
+  } catch (err) {
+    console.error("Error fetching bookings:", err);
+    res.status(500).json({ error: "Internal server error" });
+  }
 };
 
 exports.deleteBooking = async (req, res) => {
   const { id } = req.params;
   try {
-    const result = await db.query('DELETE FROM bookings WHERE id = ?', [id]);
-    if (result.affectedRows === 0)
-      return res.status(404).json({ error: 'Booking not found' });
+    const result = await db.query(
+      "DELETE FROM bookings WHERE id = $1 RETURNING id",
+      [id],
+    );
+    if (result.length === 0)
+      return res.status(404).json({ error: "Booking not found" });
 
-    res.json({ message: 'Booking deleted successfully' });
+    res.json({ message: "Booking deleted successfully" });
   } catch (err) {
-    console.error('Error deleting booking:', err);
-    res.status(500).json({ error: 'Failed to delete booking' });
+    console.error("Error deleting booking:", err);
+    res.status(500).json({ error: "Failed to delete booking" });
   }
 };
 
@@ -248,23 +251,25 @@ exports.userCancelBooking = async (req, res) => {
   const { id } = req.params;
   const { status } = req.body;
 
-  if (status !== 'Cancelled') {
-    return res.status(400).json({ error: 'Users can only cancel bookings' });
+  if (status !== "Cancelled") {
+    return res.status(400).json({ error: "Users can only cancel bookings" });
   }
 
   try {
     const result = await db.query(
-      'UPDATE bookings SET status = ? WHERE id = ?',
-      [status, id]
+      "UPDATE bookings SET status = $1 WHERE id = $2 RETURNING id",
+      [status, id],
     );
 
-    if (result.affectedRows === 0) {
-      return res.status(404).json({ error: 'Booking not found or already cancelled' });
+    if (result.length === 0) {
+      return res
+        .status(404)
+        .json({ error: "Booking not found or already cancelled" });
     }
 
-    res.json({ message: 'Booking cancelled successfully' });
+    res.json({ message: "Booking cancelled successfully" });
   } catch (err) {
-    console.error('Error cancelling booking:', err);
-    res.status(500).json({ error: 'Failed to cancel booking' });
+    console.error("Error cancelling booking:", err);
+    res.status(500).json({ error: "Failed to cancel booking" });
   }
 };

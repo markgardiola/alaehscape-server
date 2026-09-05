@@ -1,114 +1,114 @@
-const db = require('../config/connectDB');
-const bcrypt = require('bcrypt');
+const db = require("../config/connectDB");
+const bcrypt = require("bcrypt");
 
-exports.getTotalUsers = (req, res) => {
-  const query = 'SELECT COUNT(*) AS totalUsers FROM users';
-
-  db.query(query, (err, results) => {
-    if (err) {
-      console.error('Error fetching total users:', err);
-      return res.status(500).json({ error: 'Internal Server Error' });
-    }
-    res.json({ totalUsers: results[0].totalUsers });
-  });
+exports.getTotalUsers = async (req, res) => {
+  try {
+    const results = await db.query(
+      'SELECT COUNT(*) AS "totalUsers" FROM users',
+    );
+    res.json({ totalUsers: Number(results[0].totalUsers) });
+  } catch (err) {
+    console.error("Error fetching total users:", err);
+    res.status(500).json({ error: "Internal Server Error" });
+  }
 };
 
-exports.getUserInfo = (req, res) => {
-  const sql = "SELECT username, email, phone, address FROM users WHERE id = ?";
-  db.query(sql, [req.userId], (err, result) => {
-    if (err) return res.status(500).json({ message: "DB error" });
-    if (result.length === 0) return res.status(404).json({ message: "User not found" });
+exports.getUserInfo = async (req, res) => {
+  try {
+    const result = await db.query(
+      "SELECT username, email, phone, address FROM users WHERE id = $1",
+      [req.userId],
+    );
+    if (result.length === 0)
+      return res.status(404).json({ message: "User not found" });
     res.json({ user: result[0] });
-  });
+  } catch (err) {
+    console.error("Get user info error:", err);
+    res.status(500).json({ message: "DB error" });
+  }
 };
 
-exports.updateUser = (req, res) => {
+exports.updateUser = async (req, res) => {
   const { username, email, password, phone, address } = req.body;
 
-  const update = (hashedPassword = null) => {
+  try {
+    let hashedPassword = null;
+    if (password && password.trim() !== "") {
+      hashedPassword = await bcrypt.hash(password, 10);
+    }
+
     const sql = hashedPassword
-      ? "UPDATE users SET username=?, email=?, password=?, phone=?, address=? WHERE id=?"
-      : "UPDATE users SET username=?, email=?, phone=?, address=? WHERE id=?";
+      ? "UPDATE users SET username=$1, email=$2, password=$3, phone=$4, address=$5 WHERE id=$6"
+      : "UPDATE users SET username=$1, email=$2, phone=$3, address=$4 WHERE id=$5";
 
     const params = hashedPassword
       ? [username, email, hashedPassword, phone, address, req.userId]
       : [username, email, phone, address, req.userId];
 
-    db.query(sql, params, (err) => {
-      if (err) return res.status(500).json({ message: "DB error" });
-      res.json({ success: "Profile updated" });
-    });
-  };
-
-  if (password && password.trim() !== "") {
-    bcrypt.hash(password, 10, (err, hash) => {
-      if (err) return res.status(500).json({ message: "Password hashing error" });
-      update(hash);
-    });
-  } else {
-    update();
+    await db.query(sql, params);
+    res.json({ success: "Profile updated" });
+  } catch (err) {
+    console.error("Update user error:", err);
+    res.status(500).json({ message: "DB error" });
   }
 };
 
 //admins
 
-exports.getAllUsers = (req, res) => {
-  const query = 'SELECT id, username, email, phone, address FROM users';
-
-  db.query(query, (err, results) => {
-    if (err) {
-      console.error('Error fetching users:', err);
-      return res.status(500).json({ error: 'Internal Server Error' });
-    }
+exports.getAllUsers = async (req, res) => {
+  try {
+    const results = await db.query(
+      "SELECT id, username, email, phone, address FROM users",
+    );
     res.json(results);
-  });
+  } catch (err) {
+    console.error("Error fetching users:", err);
+    res.status(500).json({ error: "Internal Server Error" });
+  }
 };
 
-exports.adminUpdateUser = (req, res) => {
+exports.adminUpdateUser = async (req, res) => {
   const userId = req.params.id;
   const { username, email, phone, address, password } = req.body;
 
-  let passwordHash = null;
-  if (password) {
-    passwordHash = bcrypt.hashSync(password, 10);
-  }
-
-  const sql = `
-    UPDATE users
-    SET username = ?, email = ?, phone = ?, address = ?, ${password ? "password = ?" : "password = password"}
-    WHERE id = ?
-  `;
-
-  const params = password ? [username, email, phone, address, passwordHash, userId] : [username, email, phone, address, userId];
-
-  db.query(sql, params, (err, result) => {
-    if (err) {
-      console.error("Error updating user:", err);
-      return res.status(500).json({ error: "Failed to update user" });
+  try {
+    let passwordHash = null;
+    if (password) {
+      passwordHash = await bcrypt.hash(password, 10);
     }
 
+    const sql = passwordHash
+      ? `UPDATE users SET username = $1, email = $2, phone = $3, address = $4, password = $5 WHERE id = $6`
+      : `UPDATE users SET username = $1, email = $2, phone = $3, address = $4 WHERE id = $5`;
+
+    const params = passwordHash
+      ? [username, email, phone, address, passwordHash, userId]
+      : [username, email, phone, address, userId];
+
+    await db.query(sql, params);
     res.json({ success: true, message: "User updated successfully" });
-  });
+  } catch (err) {
+    console.error("Error updating user:", err);
+    res.status(500).json({ error: "Failed to update user" });
+  }
 };
 
-
-exports.deleteUser = (req, res) => {
+exports.deleteUser = async (req, res) => {
   const userId = req.params.id;
 
-  const sql = "DELETE FROM users WHERE id = ?";
-  db.query(sql, [userId], (err, result) => {
-    if (err) {
-      console.error("Error deleting user:", err);
-      return res.status(500).json({ message: "Failed to delete user" });
-    }
+  try {
+    const result = await db.query(
+      "DELETE FROM users WHERE id = $1 RETURNING id",
+      [userId],
+    );
 
-    if (result.affectedRows === 0) {
+    if (result.length === 0) {
       return res.status(404).json({ message: "User not found" });
     }
 
     res.json({ message: "User deleted successfully" });
-  });
+  } catch (err) {
+    console.error("Error deleting user:", err);
+    res.status(500).json({ message: "Failed to delete user" });
+  }
 };
-
-
-
