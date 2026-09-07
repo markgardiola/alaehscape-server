@@ -2,6 +2,7 @@ const {
   Client,
   Environment,
   OrdersController,
+  PaymentsController,
 } = require("@paypal/paypal-server-sdk");
 
 const client = new Client({
@@ -16,5 +17,6 @@ const client = new Client({
 });
 
 const ordersController = new OrdersController(client);
+const paymentsController = new PaymentsController(client);
 
-module.exports = { ordersController };
+module.exports = { ordersController, paymentsController };

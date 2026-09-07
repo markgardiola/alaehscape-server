@@ -2,7 +2,15 @@ const db = require("../config/connectDB");
 const sendEmail = require("../utils/sendEmail");
 const tplApproved = require("../templates/bookingApproved");
 const tplCancelled = require("../templates/bookingCancelled");
-const { ordersController } = require("../utils/paypalClient");
+const tplRefundRequested = require("../templates/refundRequested");
+const tplRefundApproved = require("../templates/refundApproved");
+const tplRefundDenied = require("../templates/refundDenied");
+const {
+  ordersController,
+  paymentsController,
+} = require("../utils/paypalClient");
+
+const ADMIN_EMAIL = "alaehscape@gmail.com";
 
 // Shared by admin approval (updateBookingStatus) and automatic PayPal
 // confirmation (capturePaypalOrder) -- both need to send the same emails.
@@ -53,6 +61,35 @@ const sendBookingStatusEmail = async (bookingId, status) => {
     console.log(`✅ ${status} email sent to ${booking.email}`);
   } catch (err) {
     console.error("❌ Email error:", err);
+  }
+};
+
+// Fetches the bits every refund-related email needs (user, resort, method).
+const getBookingForEmail = async (bookingId) => {
+  const rows = await db.query(
+    `SELECT b.id, b.payment_method, b.full_name, ud.email, r.name AS resort
+       FROM bookings b
+       JOIN users ud ON ud.id = b.user_id
+       JOIN resorts r ON r.id = b.resort_id
+      WHERE b.id = $1`,
+    [bookingId],
+  );
+  return rows[0];
+};
+
+// Attempts a full refund of a PayPal capture. Never throws -- returns a
+// result object so callers can decide how to handle a failed refund
+// (e.g. still let the cancellation go through, just flag it for the admin).
+const refundPaypalPayment = async (captureId, note) => {
+  try {
+    const { result } = await paymentsController.refundCapturedPayment({
+      captureId,
+      body: { noteToPayer: note || "Refund approved by Ala-Eh-Scape." },
+    });
+    return { success: true, refundId: result.id };
+  } catch (err) {
+    console.error("PayPal refund error:", err);
+    return { success: false, error: err.message || "Refund failed" };
   }
 };
 
@@ -168,6 +205,7 @@ exports.getAllBookings = async (req, res) => {
       bookings.check_out,
       bookings.total_price,
       bookings.payment_method,
+      bookings.cancellation_reason,
       bookings.status
     FROM bookings
     JOIN users ON bookings.user_id = users.id
@@ -241,16 +279,53 @@ exports.updateBookingStatus = async (req, res) => {
     return res.status(400).json({ error: "Invalid status" });
 
   try {
-    const result = await db.query(
-      "UPDATE bookings SET status = $1 WHERE id = $2 RETURNING id",
-      [status, id],
+    const existingRows = await db.query(
+      "SELECT payment_method, paypal_capture_id, paypal_refund_id, total_price FROM bookings WHERE id = $1",
+      [id],
     );
-    if (result.length === 0)
+    if (existingRows.length === 0)
       return res.status(404).json({ error: "Booking not found" });
+
+    const existing = existingRows[0];
+    let refundOutcome = null;
+
+    // If an admin directly cancels a booking that was actually paid via
+    // PayPal (not just going through the request-refund flow), refund it
+    // automatically too, so money never stays captured on a cancelled stay.
+    if (
+      status === "Cancelled" &&
+      existing.payment_method === "paypal" &&
+      existing.paypal_capture_id &&
+      !existing.paypal_refund_id
+    ) {
+      refundOutcome = await refundPaypalPayment(
+        existing.paypal_capture_id,
+        "Booking cancelled by Ala-Eh-Scape.",
+      );
+    }
+
+    if (refundOutcome?.success) {
+      await db.query(
+        "UPDATE bookings SET status = $1, paypal_refund_id = $2, refunded_at = NOW() WHERE id = $3",
+        [status, refundOutcome.refundId, id],
+      );
+    } else {
+      await db.query("UPDATE bookings SET status = $1 WHERE id = $2", [
+        status,
+        id,
+      ]);
+    }
 
     sendBookingStatusEmail(id, status);
 
-    res.json({ message: `Booking ${status}` });
+    res.json({
+      message: `Booking ${status}`,
+      refunded: !!refundOutcome?.success,
+      refundError:
+        refundOutcome && !refundOutcome.success
+          ? refundOutcome.error
+          : undefined,
+    });
   } catch (err) {
     console.error("Error updating booking status:", err);
     res.status(500).json({ error: "Failed to update booking status" });
@@ -271,6 +346,8 @@ exports.getUserBooking = async (req, res) => {
       b.total_price,
       b.payment_method,
       b.status,
+      b.cancellation_reason,
+      b.refund_decision_note,
       b.created_at
     FROM bookings b
     JOIN resorts r ON b.resort_id = r.id
@@ -304,6 +381,8 @@ exports.deleteBooking = async (req, res) => {
   }
 };
 
+// User cancels an unpaid (Pending) booking outright -- no money was ever
+// confirmed received, so there's nothing to refund.
 exports.userCancelBooking = async (req, res) => {
   const { id } = req.params;
   const { status } = req.body;
@@ -314,14 +393,14 @@ exports.userCancelBooking = async (req, res) => {
 
   try {
     const result = await db.query(
-      "UPDATE bookings SET status = $1 WHERE id = $2 RETURNING id",
+      "UPDATE bookings SET status = $1 WHERE id = $2 AND status = 'Pending' RETURNING id",
       [status, id],
     );
 
     if (result.length === 0) {
       return res
         .status(404)
-        .json({ error: "Booking not found or already cancelled" });
+        .json({ error: "Booking not found or cannot be cancelled directly" });
     }
 
     sendBookingStatusEmail(id, status);
@@ -333,8 +412,157 @@ exports.userCancelBooking = async (req, res) => {
   }
 };
 
+// User requests to cancel/refund a Confirmed (paid) booking -- does NOT
+// cancel or refund anything by itself, just flags it for admin review.
+exports.requestRefund = async (req, res) => {
+  const { id } = req.params;
+  const { reason } = req.body;
+
+  try {
+    const result = await db.query(
+      "UPDATE bookings SET status = 'Refund Requested', cancellation_reason = $1 WHERE id = $2 AND user_id = $3 AND status = 'Confirmed' RETURNING id",
+      [reason || null, id, req.userId],
+    );
+
+    if (result.length === 0) {
+      return res.status(404).json({
+        error:
+          "Booking not found, not yours, or not eligible for a refund request.",
+      });
+    }
+
+    const booking = await getBookingForEmail(id);
+    if (booking) {
+      sendEmail(
+        ADMIN_EMAIL,
+        `Cancel/refund request -- Booking #${id}`,
+        tplRefundRequested({
+          bookingId: id,
+          full_name: booking.full_name,
+          resort: booking.resort,
+          reason,
+        }),
+      ).catch((err) =>
+        console.error("❌ Admin notification email error:", err),
+      );
+    }
+
+    res.json({
+      message: "Cancellation/refund request submitted. Awaiting admin review.",
+    });
+  } catch (err) {
+    console.error("Error requesting refund:", err);
+    res.status(500).json({ error: "Failed to submit refund request" });
+  }
+};
+
+// Admin approves a pending refund request: refunds via PayPal automatically
+// if that's how it was paid, otherwise leaves it for manual GCash refund.
+exports.approveRefund = async (req, res) => {
+  const { id } = req.params;
+  const { decisionNote } = req.body;
+
+  try {
+    const rows = await db.query(
+      "SELECT payment_method, paypal_capture_id FROM bookings WHERE id = $1 AND status = 'Refund Requested'",
+      [id],
+    );
+
+    if (rows.length === 0) {
+      return res
+        .status(404)
+        .json({ error: "No pending refund request found for this booking." });
+    }
+
+    const booking = rows[0];
+    let refundOutcome = null;
+
+    if (booking.payment_method === "paypal" && booking.paypal_capture_id) {
+      refundOutcome = await refundPaypalPayment(
+        booking.paypal_capture_id,
+        decisionNote,
+      );
+
+      if (!refundOutcome.success) {
+        return res.status(502).json({
+          error: `Refund could not be processed via PayPal: ${refundOutcome.error}. The booking has not been changed -- please try again or handle it manually in the PayPal dashboard.`,
+        });
+      }
+    }
+
+    await db.query(
+      `UPDATE bookings
+          SET status = 'Cancelled',
+              refund_decision_note = $1,
+              paypal_refund_id = COALESCE($2, paypal_refund_id),
+              refunded_at = NOW()
+        WHERE id = $3`,
+      [decisionNote || null, refundOutcome?.refundId || null, id],
+    );
+
+    const emailData = await getBookingForEmail(id);
+    if (emailData) {
+      sendEmail(
+        emailData.email,
+        "Your refund has been approved",
+        tplRefundApproved({
+          full_name: emailData.full_name,
+          resort: emailData.resort,
+          paymentMethod: emailData.payment_method,
+          decisionNote,
+        }),
+      ).catch((err) => console.error("❌ Refund-approved email error:", err));
+    }
+
+    res.json({
+      message: "Refund approved and processed.",
+      refunded: !!refundOutcome?.success,
+    });
+  } catch (err) {
+    console.error("Error approving refund:", err);
+    res.status(500).json({ error: "Failed to approve refund" });
+  }
+};
+
+// Admin denies a pending refund request: booking reverts to Confirmed.
+exports.denyRefund = async (req, res) => {
+  const { id } = req.params;
+  const { decisionNote } = req.body;
+
+  try {
+    const result = await db.query(
+      "UPDATE bookings SET status = 'Confirmed', refund_decision_note = $1 WHERE id = $2 AND status = 'Refund Requested' RETURNING id",
+      [decisionNote || null, id],
+    );
+
+    if (result.length === 0) {
+      return res
+        .status(404)
+        .json({ error: "No pending refund request found for this booking." });
+    }
+
+    const emailData = await getBookingForEmail(id);
+    if (emailData) {
+      sendEmail(
+        emailData.email,
+        "Update on your cancellation/refund request",
+        tplRefundDenied({
+          full_name: emailData.full_name,
+          resort: emailData.resort,
+          decisionNote,
+        }),
+      ).catch((err) => console.error("❌ Refund-denied email error:", err));
+    }
+
+    res.json({ message: "Refund request denied. Booking remains confirmed." });
+  } catch (err) {
+    console.error("Error denying refund:", err);
+    res.status(500).json({ error: "Failed to deny refund request" });
+  }
+};
+
 // ---------------------------------------------------------------------
-// PayPal
+// PayPal checkout
 // ---------------------------------------------------------------------
 
 exports.createPaypalOrder = async (req, res) => {
@@ -410,9 +638,12 @@ exports.capturePaypalOrder = async (req, res) => {
       return res.status(400).json({ message: "Payment was not completed." });
     }
 
+    const captureId =
+      result.purchaseUnits?.[0]?.payments?.captures?.[0]?.id || null;
+
     await db.query(
-      "UPDATE bookings SET status = 'Confirmed', payment_method = 'paypal', paypal_order_id = $1 WHERE id = $2",
-      [orderID, bookingId],
+      "UPDATE bookings SET status = 'Confirmed', payment_method = 'paypal', paypal_order_id = $1, paypal_capture_id = $2 WHERE id = $3",
+      [orderID, captureId, bookingId],
     );
 
     sendBookingStatusEmail(bookingId, "Confirmed");

@@ -29,6 +29,21 @@ router.put(
   verifyToken,
   bookingController.userCancelBooking,
 );
+router.put(
+  "/bookings/:id/request-refund",
+  verifyToken,
+  bookingController.requestRefund,
+);
+router.put(
+  "/bookings/:id/refund/approve",
+  verifyToken,
+  bookingController.approveRefund,
+);
+router.put(
+  "/bookings/:id/refund/deny",
+  verifyToken,
+  bookingController.denyRefund,
+);
 router.post(
   "/paypal/create-order",
   verifyToken,
