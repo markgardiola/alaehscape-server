@@ -124,7 +124,7 @@ exports.getResortById = async (req, res) => {
     const resort = resortResults[0];
 
     const roomResults = await db.query(
-      "SELECT name, price FROM rooms WHERE resort_id = $1",
+      "SELECT id, name, price FROM rooms WHERE resort_id = $1",
       [id],
     );
     const amenityResults = await db.query(
