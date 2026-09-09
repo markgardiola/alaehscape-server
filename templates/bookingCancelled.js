@@ -27,7 +27,7 @@ module.exports = ({ full_name, resort }) => `
 
     <p style="margin:0">
       Sincerely,<br/>
-      <strong>Ala‑Eh‑scape Team</strong>
+      <strong>ALAI-eh Team</strong>
     </p>
   </div>
 `;

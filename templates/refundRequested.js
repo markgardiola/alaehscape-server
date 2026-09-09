@@ -33,7 +33,7 @@ module.exports = ({ bookingId, full_name, resort, reason }) => `
     </p>
 
     <p style="margin:0">
-      &mdash; Ala&#8209;Eh&#8209;scape system
+      &mdash; ALAI&#8209;eh system
     </p>
   </div>
 `;

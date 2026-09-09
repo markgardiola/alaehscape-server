@@ -1,5 +1,6 @@
 const db = require("../config/connectDB");
 const bcrypt = require("bcrypt");
+const { notifyUser } = require("../utils/notify");
 
 exports.getTotalUsers = async (req, res) => {
   try {
@@ -46,6 +47,14 @@ exports.updateUser = async (req, res) => {
       : [username, email, phone, address, req.userId];
 
     await db.query(sql, params);
+
+    notifyUser(req.userId, {
+      type: "profile_update",
+      title: "Profile updated",
+      message: "Your personal information was updated successfully.",
+      link: "/profile",
+    });
+
     res.json({ success: "Profile updated" });
   } catch (err) {
     console.error("Update user error:", err);

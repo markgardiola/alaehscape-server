@@ -9,7 +9,14 @@
  * @param {number} data.children
  * @returns {string}
  */
-module.exports = ({ full_name, resort, checkIn, checkOut, adults, children }) => `
+module.exports = ({
+  full_name,
+  resort,
+  checkIn,
+  checkOut,
+  adults,
+  children,
+}) => `
   <div style="font-family:Arial,Helvetica,sans-serif;color:#333;line-height:1.6">
     <h2 style="color:#0c6f3c;margin-bottom:0.5em">
       Hi ${full_name}, your booking is confirmed! 🎉
@@ -51,7 +58,7 @@ module.exports = ({ full_name, resort, checkIn, checkOut, adults, children }) =>
 
     <p style="margin:0">
       Warm regards,<br/>
-      Team <strong>Ala‑Eh‑scape</strong>
+      Team <strong>ALAI-eh</strong>
     </p>
   </div>
 `;

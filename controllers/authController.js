@@ -1,6 +1,7 @@
 const bcrypt = require("bcrypt");
 const jwt = require("jsonwebtoken");
 const db = require("../config/connectDB");
+const { notifyUser } = require("../utils/notify");
 require("dotenv").config();
 const JWT_SECRET_KEY = process.env.JWT;
 
@@ -17,10 +18,17 @@ exports.register = async (req, res) => {
 
     const hash = await bcrypt.hash(password, 10);
 
-    await db.query(
-      "INSERT INTO users (username, email, password) VALUES ($1, $2, $3)",
+    const result = await db.query(
+      "INSERT INTO users (username, email, password) VALUES ($1, $2, $3) RETURNING id",
       [username, email, hash],
     );
+
+    notifyUser(result[0].id, {
+      type: "registration",
+      title: "Welcome to Ala-Eh-Scape!",
+      message: "Your account has been created successfully.",
+      link: "/profile",
+    });
 
     res.json({ success: "User registered successfully" });
   } catch (err) {

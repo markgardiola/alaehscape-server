@@ -9,14 +9,17 @@ const {
   ordersController,
   paymentsController,
 } = require("../utils/paypalClient");
+const { notifyUser, notifyAdmin } = require("../utils/notify");
 
 const ADMIN_EMAIL = "alaehscape@gmail.com";
 
 // Shared by admin approval (updateBookingStatus) and automatic PayPal
-// confirmation (capturePaypalOrder) -- both need to send the same emails.
+// confirmation (capturePaypalOrder) -- both need to send the same emails
+// and notifications.
 const sendBookingStatusEmail = async (bookingId, status) => {
   const rows = await db.query(
     `SELECT b.id,
+            b.user_id,
             TO_CHAR(b.check_in,  'FMMonth FMDD, YYYY') AS "checkIn",
             TO_CHAR(b.check_out, 'FMMonth FMDD, YYYY') AS "checkOut",
             b.adults,
@@ -35,7 +38,7 @@ const sendBookingStatusEmail = async (bookingId, status) => {
   const booking = rows[0];
   if (!booking) return;
 
-  let subject, html;
+  let subject, html, notifyType, notifyTitle, notifyMessage;
   if (status === "Confirmed") {
     subject = "Your booking is confirmed! 🎉";
     html = tplApproved({
@@ -46,15 +49,28 @@ const sendBookingStatusEmail = async (bookingId, status) => {
       adults: booking.adults,
       children: booking.children,
     });
+    notifyType = "booking_confirmed";
+    notifyTitle = "Booking confirmed";
+    notifyMessage = `Your booking at ${booking.resort} is confirmed.`;
   } else if (status === "Cancelled") {
     subject = "Your booking has been cancelled";
     html = tplCancelled({
       full_name: booking.full_name,
       resort: booking.resort,
     });
+    notifyType = "booking_cancelled";
+    notifyTitle = "Booking cancelled";
+    notifyMessage = `Your booking at ${booking.resort} has been cancelled.`;
   }
 
   if (!html) return;
+
+  notifyUser(booking.user_id, {
+    type: notifyType,
+    title: notifyTitle,
+    message: notifyMessage,
+    link: `/viewMyBooking/${booking.id}`,
+  });
 
   try {
     await sendEmail(booking.email, subject, html);
@@ -64,10 +80,10 @@ const sendBookingStatusEmail = async (bookingId, status) => {
   }
 };
 
-// Fetches the bits every refund-related email needs (user, resort, method).
+// Fetches the bits every refund-related email/notification needs.
 const getBookingForEmail = async (bookingId) => {
   const rows = await db.query(
-    `SELECT b.id, b.payment_method, b.full_name, ud.email, r.name AS resort
+    `SELECT b.id, b.user_id, b.payment_method, b.full_name, ud.email, r.name AS resort
        FROM bookings b
        JOIN users ud ON ud.id = b.user_id
        JOIN resorts r ON r.id = b.resort_id
@@ -222,6 +238,47 @@ exports.getAllBookings = async (req, res) => {
   }
 };
 
+// Admin-only "Refund Requests" tab: just the bookings awaiting a decision.
+exports.getRefundRequests = async (req, res) => {
+  const sql = `
+    SELECT
+      bookings.id AS booking_id,
+      users.username,
+      resorts.name AS resort_name,
+      bookings.check_in,
+      bookings.check_out,
+      bookings.total_price,
+      bookings.payment_method,
+      bookings.cancellation_reason,
+      bookings.status
+    FROM bookings
+    JOIN users ON bookings.user_id = users.id
+    JOIN resorts ON bookings.resort_id = resorts.id
+    WHERE bookings.status = 'Refund Requested'
+    ORDER BY bookings.created_at ASC
+  `;
+
+  try {
+    const results = await db.query(sql);
+    res.json(results);
+  } catch (err) {
+    console.error("Error fetching refund requests:", err);
+    res.status(500).json({ message: "Database error" });
+  }
+};
+
+exports.getRefundRequestCount = async (req, res) => {
+  try {
+    const results = await db.query(
+      "SELECT COUNT(*) AS \"count\" FROM bookings WHERE status = 'Refund Requested'",
+    );
+    res.json({ count: Number(results[0].count) });
+  } catch (err) {
+    console.error("Error counting refund requests:", err);
+    res.status(500).json({ error: "Internal Server Error" });
+  }
+};
+
 exports.uploadPaymentReceipt = async (req, res) => {
   const { bookingId } = req.body;
   const receiptImage = req.file.path;
@@ -233,10 +290,15 @@ exports.uploadPaymentReceipt = async (req, res) => {
   }
 
   try {
-    await db.query(
-      "UPDATE bookings SET receipt = $1, payment_method = 'gcash' WHERE id = $2",
-      [receiptImage, bookingId],
+    const result = await db.query(
+      "UPDATE bookings SET receipt = $1, payment_method = 'gcash' WHERE id = $2 AND user_id = $3 RETURNING id",
+      [receiptImage, bookingId, req.userId],
     );
+
+    if (result.length === 0) {
+      return res.status(404).json({ message: "Booking not found." });
+    }
+
     return res.status(200).json({ message: "Receipt uploaded successfully!" });
   } catch (err) {
     console.error("Receipt upload error:", err);
@@ -247,17 +309,17 @@ exports.uploadPaymentReceipt = async (req, res) => {
 exports.getBookingById = async (req, res) => {
   const bookingId = req.params.id;
 
-  const sql = `
-    SELECT
-      b.*,
-      r.name AS resort_name
-    FROM bookings b
-    JOIN resorts r ON b.resort_id = r.id
-    WHERE b.id = $1
-  `;
+  // Admins can view any booking; regular users only their own.
+  const sql =
+    req.userRole === "admin"
+      ? `SELECT b.*, r.name AS resort_name FROM bookings b JOIN resorts r ON b.resort_id = r.id WHERE b.id = $1`
+      : `SELECT b.*, r.name AS resort_name FROM bookings b JOIN resorts r ON b.resort_id = r.id WHERE b.id = $1 AND b.user_id = $2`;
+
+  const params =
+    req.userRole === "admin" ? [bookingId] : [bookingId, req.userId];
 
   try {
-    const results = await db.query(sql, [bookingId]);
+    const results = await db.query(sql, params);
 
     if (results.length === 0) {
       return res.status(404).json({ message: "Booking not found" });
@@ -335,6 +397,13 @@ exports.updateBookingStatus = async (req, res) => {
 exports.getUserBooking = async (req, res) => {
   const userId = req.params.userId;
 
+  // Users may only list their own bookings; admins can look up anyone's.
+  if (req.userRole !== "admin" && Number(userId) !== Number(req.userId)) {
+    return res
+      .status(403)
+      .json({ error: "Not authorized to view these bookings." });
+  }
+
   const query = `
     SELECT
       b.id,
@@ -364,15 +433,20 @@ exports.getUserBooking = async (req, res) => {
   }
 };
 
+// Users may delete their own Pending/Cancelled bookings (see MyBooking.jsx --
+// Confirmed/Refund Requested bookings are never offered a delete button,
+// but this is enforced here too, not just hidden in the UI).
 exports.deleteBooking = async (req, res) => {
   const { id } = req.params;
   try {
     const result = await db.query(
-      "DELETE FROM bookings WHERE id = $1 RETURNING id",
-      [id],
+      "DELETE FROM bookings WHERE id = $1 AND user_id = $2 AND status IN ('Pending', 'Cancelled') RETURNING id",
+      [id, req.userId],
     );
     if (result.length === 0)
-      return res.status(404).json({ error: "Booking not found" });
+      return res
+        .status(404)
+        .json({ error: "Booking not found or cannot be deleted." });
 
     res.json({ message: "Booking deleted successfully" });
   } catch (err) {
@@ -393,8 +467,8 @@ exports.userCancelBooking = async (req, res) => {
 
   try {
     const result = await db.query(
-      "UPDATE bookings SET status = $1 WHERE id = $2 AND status = 'Pending' RETURNING id",
-      [status, id],
+      "UPDATE bookings SET status = $1 WHERE id = $2 AND user_id = $3 AND status = 'Pending' RETURNING id",
+      [status, id, req.userId],
     );
 
     if (result.length === 0) {
@@ -433,6 +507,20 @@ exports.requestRefund = async (req, res) => {
 
     const booking = await getBookingForEmail(id);
     if (booking) {
+      notifyUser(booking.user_id, {
+        type: "refund_requested",
+        title: "Refund request submitted",
+        message: `We received your cancellation/refund request for ${booking.resort}.`,
+        link: `/viewMyBooking/${id}`,
+      });
+
+      notifyAdmin({
+        type: "refund_requested",
+        title: "New cancellation/refund request",
+        message: `${booking.full_name} requested a refund for booking #${id} (${booking.resort}).`,
+        link: `/adminDashboard/refund-requests`,
+      });
+
       sendEmail(
         ADMIN_EMAIL,
         `Cancel/refund request -- Booking #${id}`,
@@ -502,6 +590,13 @@ exports.approveRefund = async (req, res) => {
 
     const emailData = await getBookingForEmail(id);
     if (emailData) {
+      notifyUser(emailData.user_id, {
+        type: "refund_approved",
+        title: "Refund approved",
+        message: `Your refund for ${emailData.resort} has been approved.`,
+        link: `/viewMyBooking/${id}`,
+      });
+
       sendEmail(
         emailData.email,
         "Your refund has been approved",
@@ -543,6 +638,13 @@ exports.denyRefund = async (req, res) => {
 
     const emailData = await getBookingForEmail(id);
     if (emailData) {
+      notifyUser(emailData.user_id, {
+        type: "refund_denied",
+        title: "Refund request denied",
+        message: `Your refund request for ${emailData.resort} was denied. The booking remains confirmed.`,
+        link: `/viewMyBooking/${id}`,
+      });
+
       sendEmail(
         emailData.email,
         "Update on your cancellation/refund request",

@@ -35,7 +35,7 @@ module.exports = ({ full_name, resort, decisionNote }) => `
 
     <p style="margin:0">
       Sincerely,<br/>
-      <strong>Ala&#8209;Eh&#8209;scape Team</strong>
+      <strong>ALAI&#8209;eh Team</strong>
     </p>
   </div>
 `;
