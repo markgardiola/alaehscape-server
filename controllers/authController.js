@@ -47,17 +47,35 @@ exports.login = async (req, res) => {
     let user = result[0];
 
     if (!user) {
-      result = await db.query("SELECT * FROM admin WHERE email = $1", [email]);
-      user = result[0];
-    }
-
-    if (!user) {
       return res.status(404).json({ message: "User not found" });
     }
 
     await handleLogin(user, password, res);
   } catch (err) {
     console.error("Login error:", err);
+    res.status(500).json({ message: "Server error" });
+  }
+};
+
+// Used only by the admin sign-in page. Unlike login() above, this never
+// touches the users table, so there's no ambiguity if an email happens to
+// exist in both tables (e.g. an admin who also has/had a customer account).
+exports.adminLogin = async (req, res) => {
+  const { email, password } = req.body;
+
+  try {
+    const result = await db.query("SELECT * FROM admin WHERE email = $1", [
+      email,
+    ]);
+    const user = result[0];
+
+    if (!user) {
+      return res.status(404).json({ message: "Admin account not found" });
+    }
+
+    await handleLogin(user, password, res);
+  } catch (err) {
+    console.error("Admin login error:", err);
     res.status(500).json({ message: "Server error" });
   }
 };
