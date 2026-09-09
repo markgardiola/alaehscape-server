@@ -62,8 +62,6 @@ exports.updateUser = async (req, res) => {
   }
 };
 
-//admins
-
 exports.getAllUsers = async (req, res) => {
   try {
     const results = await db.query(
