@@ -57,10 +57,22 @@ exports.updateUser = async (req, res) => {
 
     res.json({ success: "Profile updated" });
   } catch (err) {
+    if (err.code === "23505") {
+      const field = err.constraint?.includes("phone")
+        ? "mobile number"
+        : "email";
+      return res
+        .status(400)
+        .json({
+          message: `That ${field} is already in use by another account.`,
+        });
+    }
     console.error("Update user error:", err);
     res.status(500).json({ message: "DB error" });
   }
 };
+
+//admins
 
 exports.getAllUsers = async (req, res) => {
   try {
@@ -95,6 +107,14 @@ exports.adminUpdateUser = async (req, res) => {
     await db.query(sql, params);
     res.json({ success: true, message: "User updated successfully" });
   } catch (err) {
+    if (err.code === "23505") {
+      const field = err.constraint?.includes("phone")
+        ? "mobile number"
+        : "email";
+      return res
+        .status(400)
+        .json({ error: `That ${field} is already in use by another account.` });
+    }
     console.error("Error updating user:", err);
     res.status(500).json({ error: "Failed to update user" });
   }
