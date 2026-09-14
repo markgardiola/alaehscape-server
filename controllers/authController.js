@@ -158,7 +158,7 @@ exports.requestRegistrationOtp = async (req, res) => {
     });
 
     try {
-      await sendOtpSms(normalizedPhone, code, "Welcome to Ala-Eh-Scape!");
+      await sendOtpSms(normalizedPhone, code, "Welcome to ALAI-eh!");
     } catch (sendErr) {
       await discardOtp(otpId);
       throw sendErr;
@@ -205,7 +205,7 @@ exports.resendRegistrationOtp = async (req, res) => {
       await sendOtpSms(
         pending.payload.phone,
         code,
-        "Your new Ala-Eh-Scape verification code.",
+        "Your new ALAI-eh verification code.",
       );
     } catch (sendErr) {
       await discardOtp(otpId);
@@ -271,7 +271,7 @@ exports.verifyRegistrationOtp = async (req, res) => {
 
     notifyUser(userId, {
       type: "registration",
-      title: "Welcome to Ala-Eh-Scape!",
+      title: "Welcome to ALAI-eh!",
       message: "Your account has been created and verified successfully.",
       link: "/profile",
     });
@@ -384,15 +384,11 @@ exports.requestPasswordResetOtp = async (req, res) => {
 
     try {
       if (channel === "sms") {
-        await sendOtpSms(
-          user.phone,
-          code,
-          "Ala-Eh-Scape password reset request.",
-        );
+        await sendOtpSms(user.phone, code, "ALAI-eh password reset request.");
       } else {
         await sendEmail(
           email,
-          "Reset your Ala-Eh-Scape password",
+          "Reset your ALAI-eh password",
           `<div style="font-family:Arial,Helvetica,sans-serif;color:#333;line-height:1.6">
              <p>Hi ${user.username},</p>
              <p>Your password reset code is <b style="font-size:1.2em;letter-spacing:2px">${code}</b>.
@@ -455,12 +451,12 @@ exports.resendPasswordResetOtp = async (req, res) => {
         await sendOtpSms(
           user.phone,
           code,
-          "Your new Ala-Eh-Scape password reset code.",
+          "Your new ALAI-eh password reset code.",
         );
       } else {
         await sendEmail(
           email,
-          "Your new Ala-Eh-Scape password reset code",
+          "Your new ALAI-eh password reset code",
           `<p>Hi ${user.username},</p><p>Your new password reset code is <b>${code}</b>. It expires in ${OTP_TTL_MINUTES} minutes.</p>`,
         );
       }

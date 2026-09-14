@@ -100,7 +100,7 @@ const refundPaypalPayment = async (captureId, note) => {
   try {
     const { result } = await paymentsController.refundCapturedPayment({
       captureId,
-      body: { noteToPayer: note || "Refund approved by Ala-Eh-Scape." },
+      body: { noteToPayer: note || "Refund approved by ALAI-eh." },
     });
     return { success: true, refundId: result.id };
   } catch (err) {
@@ -362,7 +362,7 @@ exports.updateBookingStatus = async (req, res) => {
     ) {
       refundOutcome = await refundPaypalPayment(
         existing.paypal_capture_id,
-        "Booking cancelled by Ala-Eh-Scape.",
+        "Booking cancelled by ALAI-eh.",
       );
     }
 
@@ -693,7 +693,7 @@ exports.createPaypalOrder = async (req, res) => {
           {
             referenceId: String(booking.id),
             customId: String(booking.id),
-            description: `Ala-Eh-Scape booking #${booking.id}`,
+            description: `ALAI-eh booking #${booking.id}`,
             amount: {
               currencyCode: "PHP",
               value: Number(booking.total_price).toFixed(2),
