@@ -407,6 +407,7 @@ exports.getUserBooking = async (req, res) => {
   const query = `
     SELECT
       b.id,
+      b.resort_id,
       r.name AS resort_name,
       b.check_in,
       b.check_out,
@@ -417,10 +418,12 @@ exports.getUserBooking = async (req, res) => {
       b.status,
       b.cancellation_reason,
       b.refund_decision_note,
-      b.created_at
+      b.created_at,
+      (rev.id IS NOT NULL) AS has_review
     FROM bookings b
     JOIN resorts r ON b.resort_id = r.id
-    WHERE b.user_id = $1
+    LEFT JOIN reviews rev ON rev.booking_id = b.id
+    WHERE b.user_id = $1 AND b.hidden_by_user = FALSE
     ORDER BY b.created_at DESC
   `;
 
@@ -436,11 +439,24 @@ exports.getUserBooking = async (req, res) => {
 // Users may delete their own Pending/Cancelled bookings (see MyBooking.jsx --
 // Confirmed/Refund Requested bookings are never offered a delete button,
 // but this is enforced here too, not just hidden in the UI).
+// "Deletes" a booking from the customer's own list. This is a soft delete
+// (hidden_by_user flag), not a real row DELETE, on purpose:
+//   1. A real DELETE cascades and wipes out any review left for this
+//      booking (reviews.booking_id references bookings.id ON DELETE CASCADE).
+//   2. Admin reporting/analytics still needs the full booking history,
+//      including ones a customer has since removed from their own view.
+//
+// Only offered once a booking is "settled": Cancelled, or a Confirmed stay
+// that has already happened (check-out date passed). Pending bookings are
+// excluded -- those should be cancelled first, not hidden while still active.
 exports.deleteBooking = async (req, res) => {
   const { id } = req.params;
   try {
     const result = await db.query(
-      "DELETE FROM bookings WHERE id = $1 AND user_id = $2 AND status IN ('Pending', 'Cancelled') RETURNING id",
+      `UPDATE bookings SET hidden_by_user = TRUE
+       WHERE id = $1 AND user_id = $2
+         AND (status = 'Cancelled' OR (status = 'Confirmed' AND check_out < CURRENT_DATE))
+       RETURNING id`,
       [id, req.userId],
     );
     if (result.length === 0)
@@ -448,7 +464,7 @@ exports.deleteBooking = async (req, res) => {
         .status(404)
         .json({ error: "Booking not found or cannot be deleted." });
 
-    res.json({ message: "Booking deleted successfully" });
+    res.json({ message: "Booking removed from your list." });
   } catch (err) {
     console.error("Error deleting booking:", err);
     res.status(500).json({ error: "Failed to delete booking" });

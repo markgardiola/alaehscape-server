@@ -135,10 +135,19 @@ exports.getResortById = async (req, res) => {
       "SELECT id, image_url FROM resort_images WHERE resort_id = $1",
       [id],
     );
+    const ratingResults = await db.query(
+      `SELECT COUNT(*)::int AS count, COALESCE(AVG(rating)::float, 0) AS average
+       FROM reviews WHERE resort_id = $1`,
+      [id],
+    );
 
     resort.rooms = roomResults;
     resort.amenities = amenityResults.map((a) => a.amenity);
     resort.images = imageResults; // [{ id, image_url }, ...] - full gallery for the carousel
+    resort.rating = {
+      average: ratingResults[0].average,
+      count: ratingResults[0].count,
+    };
 
     res.json(resort);
   } catch (err) {
@@ -243,11 +252,26 @@ exports.getResortByLocation = async (req, res) => {
   const location = req.params.location;
 
   try {
+    // Grouping by r.id (the primary key) lets Postgres select all of r.*
+    // alongside the aggregates without listing every column in GROUP BY.
     const results = await db.query(
-      "SELECT * FROM resorts WHERE location = $1 ORDER BY created_at DESC",
+      `SELECT r.*,
+              COALESCE(AVG(rev.rating)::float, 0) AS avg_rating,
+              COUNT(rev.id)::int AS review_count
+       FROM resorts r
+       LEFT JOIN reviews rev ON rev.resort_id = r.id
+       WHERE r.location = $1
+       GROUP BY r.id
+       ORDER BY r.created_at DESC`,
       [location],
     );
-    res.json(results);
+
+    const resorts = results.map(({ avg_rating, review_count, ...resort }) => ({
+      ...resort,
+      rating: { average: avg_rating, count: review_count },
+    }));
+
+    res.json(resorts);
   } catch (err) {
     console.error("Error fetching resorts by location:", err);
     res.status(500).json({ error: "Database error" });
