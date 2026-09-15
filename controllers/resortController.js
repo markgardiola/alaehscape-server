@@ -2,7 +2,7 @@ const db = require("../config/connectDB");
 const { buildValuesClause } = require("../utils/buildValuesClause");
 
 exports.createResort = async (req, res) => {
-  const { name, location, description } = req.body;
+  const { name, location, description, ownerName, ownerEmail } = req.body;
 
   let rooms = [];
   let amenities = [];
@@ -15,10 +15,18 @@ exports.createResort = async (req, res) => {
       .json({ message: "Invalid JSON format for rooms or amenities." });
   }
 
-  if (!name || !location || !description || rooms.length === 0) {
-    return res
-      .status(400)
-      .json({ message: "All fields and at least one room are required." });
+  if (
+    !name ||
+    !location ||
+    !description ||
+    !ownerName ||
+    !ownerEmail ||
+    rooms.length === 0
+  ) {
+    return res.status(400).json({
+      message:
+        "All fields (including resort owner name/email) and at least one room are required.",
+    });
   }
 
   if (!req.files || req.files.length === 0) {
@@ -29,8 +37,8 @@ exports.createResort = async (req, res) => {
 
   try {
     const resortResult = await db.query(
-      "INSERT INTO resorts (name, location, description) VALUES ($1, $2, $3) RETURNING id",
-      [name, location, description],
+      "INSERT INTO resorts (name, location, description, owner_name, owner_email) VALUES ($1, $2, $3, $4, $5) RETURNING id",
+      [name, location, description, ownerName, ownerEmail],
     );
     const resortId = resortResult[0].id;
 
@@ -174,7 +182,7 @@ exports.deleteResort = async (req, res) => {
 
 exports.updateResort = async (req, res) => {
   const { id } = req.params;
-  const { name, location, description } = req.body;
+  const { name, location, description, ownerName, ownerEmail } = req.body;
 
   let rooms = [];
   let amenities = [];
@@ -194,10 +202,18 @@ exports.updateResort = async (req, res) => {
   const newImageUrls = req.files ? req.files.map((file) => file.path) : [];
   const finalImages = [...keepImages, ...newImageUrls];
 
-  if (!name || !location || !description || rooms.length === 0) {
-    return res
-      .status(400)
-      .json({ message: "All required fields must be filled." });
+  if (
+    !name ||
+    !location ||
+    !description ||
+    !ownerName ||
+    !ownerEmail ||
+    rooms.length === 0
+  ) {
+    return res.status(400).json({
+      message:
+        "All required fields (including resort owner name/email) must be filled.",
+    });
   }
 
   if (finalImages.length === 0) {
@@ -208,8 +224,8 @@ exports.updateResort = async (req, res) => {
     const coverImage = finalImages[0]; // legacy single-image column used by listing/search cards
 
     await db.query(
-      `UPDATE resorts SET name = $1, location = $2, description = $3, image = $4 WHERE id = $5`,
-      [name, location, description, coverImage, id],
+      `UPDATE resorts SET name = $1, location = $2, description = $3, image = $4, owner_name = $5, owner_email = $6 WHERE id = $7`,
+      [name, location, description, coverImage, ownerName, ownerEmail, id],
     );
 
     // Replace the gallery with exactly what the admin submitted (kept + new)

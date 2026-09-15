@@ -5,6 +5,8 @@ const tplCancelled = require("../templates/bookingCancelled");
 const tplRefundRequested = require("../templates/refundRequested");
 const tplRefundApproved = require("../templates/refundApproved");
 const tplRefundDenied = require("../templates/refundDenied");
+const tplOwnerNewBooking = require("../templates/ownerNewBooking");
+const tplOwnerBookingCancelled = require("../templates/ownerBookingCancelled");
 const {
   ordersController,
   paymentsController,
@@ -13,10 +15,66 @@ const { notifyUser, notifyAdmin } = require("../utils/notify");
 
 const ADMIN_EMAIL = "alaehscape@gmail.com";
 
+// Emails the resort owner: 'new_booking' once a booking actually goes
+// Confirmed (so they know to expect a guest), or 'cancelled' when a
+// booking they were previously told about falls through. Silently does
+// nothing if this resort has no owner_email on file yet.
+const notifyResortOwner = async (bookingId, event) => {
+  const rows = await db.query(
+    `SELECT b.full_name AS guest_name,
+            TO_CHAR(b.check_in,  'FMMonth FMDD, YYYY') AS "checkIn",
+            TO_CHAR(b.check_out, 'FMMonth FMDD, YYYY') AS "checkOut",
+            b.adults,
+            b.children,
+            r.name AS resort,
+            r.owner_name,
+            r.owner_email
+       FROM bookings b
+       JOIN resorts r ON r.id = b.resort_id
+      WHERE b.id = $1`,
+    [bookingId],
+  );
+
+  const booking = rows[0];
+  if (!booking || !booking.owner_email) return;
+
+  const data = {
+    owner_name: booking.owner_name || "there",
+    resort: booking.resort,
+    guest_name: booking.guest_name,
+    checkIn: booking.checkIn,
+    checkOut: booking.checkOut,
+    adults: booking.adults,
+    children: booking.children,
+  };
+
+  const subject =
+    event === "new_booking"
+      ? `New booking at ${booking.resort}! 🎉`
+      : `Booking update: a stay at ${booking.resort} was cancelled`;
+  const html =
+    event === "new_booking"
+      ? tplOwnerNewBooking(data)
+      : tplOwnerBookingCancelled(data);
+
+  try {
+    await sendEmail(booking.owner_email, subject, html);
+    console.log(`✅ Owner ${event} email sent to ${booking.owner_email}`);
+  } catch (err) {
+    console.error("❌ Owner email error:", err);
+  }
+};
+
 // Shared by admin approval (updateBookingStatus) and automatic PayPal
 // confirmation (capturePaypalOrder) -- both need to send the same emails
-// and notifications.
-const sendBookingStatusEmail = async (bookingId, status) => {
+// and notifications. previousStatus lets the Cancelled branch know
+// whether the resort owner was ever told about this booking in the first
+// place (only Confirmed bookings trigger an owner email).
+const sendBookingStatusEmail = async (
+  bookingId,
+  status,
+  previousStatus = null,
+) => {
   const rows = await db.query(
     `SELECT b.id,
             b.user_id,
@@ -52,6 +110,7 @@ const sendBookingStatusEmail = async (bookingId, status) => {
     notifyType = "booking_confirmed";
     notifyTitle = "Booking confirmed";
     notifyMessage = `Your booking at ${booking.resort} is confirmed.`;
+    notifyResortOwner(bookingId, "new_booking");
   } else if (status === "Cancelled") {
     subject = "Your booking has been cancelled";
     html = tplCancelled({
@@ -61,6 +120,9 @@ const sendBookingStatusEmail = async (bookingId, status) => {
     notifyType = "booking_cancelled";
     notifyTitle = "Booking cancelled";
     notifyMessage = `Your booking at ${booking.resort} has been cancelled.`;
+    if (previousStatus === "Confirmed") {
+      notifyResortOwner(bookingId, "cancelled");
+    }
   }
 
   if (!html) return;
@@ -342,7 +404,7 @@ exports.updateBookingStatus = async (req, res) => {
 
   try {
     const existingRows = await db.query(
-      "SELECT payment_method, paypal_capture_id, paypal_refund_id, total_price FROM bookings WHERE id = $1",
+      "SELECT status, payment_method, paypal_capture_id, paypal_refund_id, total_price FROM bookings WHERE id = $1",
       [id],
     );
     if (existingRows.length === 0)
@@ -378,7 +440,7 @@ exports.updateBookingStatus = async (req, res) => {
       ]);
     }
 
-    sendBookingStatusEmail(id, status);
+    sendBookingStatusEmail(id, status, existing.status);
 
     res.json({
       message: `Booking ${status}`,
@@ -493,7 +555,7 @@ exports.userCancelBooking = async (req, res) => {
         .json({ error: "Booking not found or cannot be cancelled directly" });
     }
 
-    sendBookingStatusEmail(id, status);
+    sendBookingStatusEmail(id, status, "Pending");
 
     res.json({ message: "Booking cancelled successfully" });
   } catch (err) {
@@ -577,7 +639,7 @@ exports.approveRefund = async (req, res) => {
 
   try {
     const rows = await db.query(
-      "SELECT payment_method, paypal_capture_id FROM bookings WHERE id = $1 AND status = 'Refund Requested'",
+      "SELECT payment_method, paypal_capture_id, pre_refund_status FROM bookings WHERE id = $1 AND status = 'Refund Requested'",
       [id],
     );
 
@@ -613,6 +675,10 @@ exports.approveRefund = async (req, res) => {
         WHERE id = $3`,
       [decisionNote || null, refundOutcome?.refundId || null, id],
     );
+
+    if (booking.pre_refund_status === "Confirmed") {
+      notifyResortOwner(id, "cancelled");
+    }
 
     const emailData = await getBookingForEmail(id);
     if (emailData) {
