@@ -176,8 +176,8 @@ exports.submitBooking = async (req, res) => {
 
     const sql = `
       INSERT INTO bookings
-      (user_id, resort_id, room_id, full_name, email, mobile, address, check_in, check_out, adults, children, total_price)
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+      (user_id, resort_id, room_id, full_name, email, mobile, address, check_in, check_out, adults, children, total_price, original_price)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $12)
       RETURNING id
     `;
 

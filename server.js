@@ -10,6 +10,7 @@ const resortRoutes = require("./routes/resortRoutes");
 const bookingRoutes = require("./routes/bookingRoutes");
 const notificationRoutes = require("./routes/notificationRoutes");
 const reviewRoutes = require("./routes/reviewRoutes");
+const promoRoutes = require("./routes/promoRoutes");
 
 const port = process.env.PORT || 5000;
 
@@ -41,5 +42,6 @@ app.use("/api", resortRoutes);
 app.use("/api", bookingRoutes);
 app.use("/api", notificationRoutes);
 app.use("/api", reviewRoutes);
+app.use("/api", promoRoutes);
 
 app.listen(port, () => console.log(`Server running on port ${port}`));
