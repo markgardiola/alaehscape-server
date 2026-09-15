@@ -502,15 +502,24 @@ exports.userCancelBooking = async (req, res) => {
   }
 };
 
-// User requests to cancel/refund a Confirmed (paid) booking -- does NOT
-// cancel or refund anything by itself, just flags it for admin review.
+// User requests to cancel/refund a Confirmed (paid, stay not yet over) or
+// Pending booking -- does NOT cancel or refund anything by itself, just
+// flags it for admin review. Pending is included because a GCash receipt
+// may already have been uploaded and paid before admin gets to confirm it,
+// so an outright, unreviewed cancel isn't safe there either. A Confirmed
+// booking whose check-out date has already passed is excluded -- there's
+// nothing left to cancel once the stay happened.
 exports.requestRefund = async (req, res) => {
   const { id } = req.params;
   const { reason } = req.body;
 
   try {
     const result = await db.query(
-      "UPDATE bookings SET status = 'Refund Requested', cancellation_reason = $1 WHERE id = $2 AND user_id = $3 AND status = 'Confirmed' RETURNING id",
+      `UPDATE bookings
+          SET status = 'Refund Requested', pre_refund_status = status, cancellation_reason = $1
+        WHERE id = $2 AND user_id = $3
+          AND (status = 'Pending' OR (status = 'Confirmed' AND check_out >= CURRENT_DATE))
+        RETURNING id`,
       [reason || null, id, req.userId],
     );
 
@@ -599,7 +608,8 @@ exports.approveRefund = async (req, res) => {
           SET status = 'Cancelled',
               refund_decision_note = $1,
               paypal_refund_id = COALESCE($2, paypal_refund_id),
-              refunded_at = NOW()
+              refunded_at = NOW(),
+              pre_refund_status = NULL
         WHERE id = $3`,
       [decisionNote || null, refundOutcome?.refundId || null, id],
     );
@@ -642,7 +652,12 @@ exports.denyRefund = async (req, res) => {
 
   try {
     const result = await db.query(
-      "UPDATE bookings SET status = 'Confirmed', refund_decision_note = $1 WHERE id = $2 AND status = 'Refund Requested' RETURNING id",
+      `UPDATE bookings
+          SET status = COALESCE(pre_refund_status, 'Confirmed'),
+              refund_decision_note = $1,
+              pre_refund_status = NULL
+        WHERE id = $2 AND status = 'Refund Requested'
+        RETURNING id, status`,
       [decisionNote || null, id],
     );
 
@@ -652,12 +667,14 @@ exports.denyRefund = async (req, res) => {
         .json({ error: "No pending refund request found for this booking." });
     }
 
+    const restoredStatus = result[0].status;
+
     const emailData = await getBookingForEmail(id);
     if (emailData) {
       notifyUser(emailData.user_id, {
         type: "refund_denied",
         title: "Refund request denied",
-        message: `Your refund request for ${emailData.resort} was denied. The booking remains confirmed.`,
+        message: `Your refund request for ${emailData.resort} was denied. The booking remains ${restoredStatus.toLowerCase()}.`,
         link: `/viewMyBooking/${id}`,
       });
 
@@ -672,7 +689,9 @@ exports.denyRefund = async (req, res) => {
       ).catch((err) => console.error("❌ Refund-denied email error:", err));
     }
 
-    res.json({ message: "Refund request denied. Booking remains confirmed." });
+    res.json({
+      message: `Refund request denied. Booking remains ${restoredStatus.toLowerCase()}.`,
+    });
   } catch (err) {
     console.error("Error denying refund:", err);
     res.status(500).json({ error: "Failed to deny refund request" });
