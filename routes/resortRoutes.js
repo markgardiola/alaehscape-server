@@ -9,7 +9,7 @@ router.post(
   "/add_resort",
   verifyToken,
   requireAdmin,
-  uploadResortImages.array("images", 10),
+  uploadResortImages.any(),
   resortController.createResort,
 );
 router.get("/resorts", resortController.getAllResorts);
@@ -25,7 +25,7 @@ router.put(
   "/resorts/:id",
   verifyToken,
   requireAdmin,
-  uploadResortImages.array("images", 10),
+  uploadResortImages.any(),
   resortController.updateResort,
 );
 router.get("/resorts/location/:location", resortController.getResortByLocation);

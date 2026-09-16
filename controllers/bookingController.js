@@ -192,10 +192,37 @@ exports.getTotalBookings = async (req, res) => {
   }
 };
 
+// GET /api/resorts/:resortId/booked-dates
+// Public -- powers the real-time availability calendar on the Booking page.
+// This is a private resort, so booking it blocks the whole property, not
+// just one room -- availability depends only on the resort, not on any
+// specific room. Returns each active booking's [check_in, check_out)
+// range; the frontend expands these into individual disabled dates.
+exports.getResortBookedDates = async (req, res) => {
+  const { resortId } = req.params;
+
+  try {
+    const rows = await db.query(
+      `SELECT TO_CHAR(check_in, 'YYYY-MM-DD') AS check_in,
+              TO_CHAR(check_out, 'YYYY-MM-DD') AS check_out
+         FROM bookings
+        WHERE resort_id = $1
+          AND status IN ('Pending', 'Confirmed', 'Refund Requested')
+          AND check_out >= CURRENT_DATE`,
+      [resortId],
+    );
+    res.json(rows);
+  } catch (err) {
+    console.error("Error fetching resort booked dates:", err);
+    res
+      .status(500)
+      .json({ message: "Server error while fetching availability." });
+  }
+};
+
 exports.submitBooking = async (req, res) => {
   const {
     resortId,
-    roomId,
     fullName,
     email,
     mobile,
@@ -208,10 +235,6 @@ exports.submitBooking = async (req, res) => {
 
   const userId = req.userId;
 
-  if (!roomId) {
-    return res.status(400).json({ message: "Please select a room." });
-  }
-
   const nights = nightsBetween(checkIn, checkOut);
   if (!nights || nights < 1) {
     return res
@@ -222,31 +245,49 @@ exports.submitBooking = async (req, res) => {
   try {
     // Price always comes from the DB, never the client -- a request could
     // otherwise be tampered with to book at any price.
-    const roomRows = await db.query(
-      "SELECT price FROM rooms WHERE id = $1 AND resort_id = $2",
-      [roomId, resortId],
+    const resortRows = await db.query(
+      "SELECT price_per_night FROM resorts WHERE id = $1",
+      [resortId],
     );
 
-    if (roomRows.length === 0) {
-      return res
-        .status(400)
-        .json({ message: "Selected room was not found for this resort." });
+    if (resortRows.length === 0) {
+      return res.status(400).json({ message: "Resort not found." });
     }
 
-    const pricePerNight = Number(roomRows[0].price);
+    // Guards against double-booking: two date ranges [a,b) and [c,d) overlap
+    // when a < d AND c < b. This is a private resort -- one booking blocks
+    // the whole property, so this checks resort_id, not a specific room.
+    // Anything not Cancelled still holds the resort -- including Pending,
+    // since two people could otherwise both "book" the same dates while
+    // one is still on the payment step.
+    const overlapRows = await db.query(
+      `SELECT id FROM bookings
+        WHERE resort_id = $1
+          AND status IN ('Pending', 'Confirmed', 'Refund Requested')
+          AND check_in < $2 AND check_out > $3`,
+      [resortId, checkOut, checkIn],
+    );
+
+    if (overlapRows.length > 0) {
+      return res.status(409).json({
+        message:
+          "Sorry, this resort is no longer available for the selected dates. Please choose different dates.",
+      });
+    }
+
+    const pricePerNight = Number(resortRows[0].price_per_night);
     const totalPrice = Math.round(pricePerNight * nights * 100) / 100;
 
     const sql = `
       INSERT INTO bookings
-      (user_id, resort_id, room_id, full_name, email, mobile, address, check_in, check_out, adults, children, total_price, original_price)
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $12)
+      (user_id, resort_id, full_name, email, mobile, address, check_in, check_out, adults, children, total_price, original_price)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $11)
       RETURNING id
     `;
 
     const values = [
       userId,
       resortId,
-      roomId,
       fullName,
       email,
       mobile,

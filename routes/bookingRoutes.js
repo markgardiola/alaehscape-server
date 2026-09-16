@@ -7,6 +7,10 @@ const uploadReceipt = require("../middlewares/uploadReceipt");
 
 router.post("/book", verifyToken, bookingController.submitBooking);
 router.get(
+  "/resorts/:resortId/booked-dates",
+  bookingController.getResortBookedDates,
+);
+router.get(
   "/bookings",
   verifyToken,
   requireAdmin,

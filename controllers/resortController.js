@@ -2,7 +2,8 @@ const db = require("../config/connectDB");
 const { buildValuesClause } = require("../utils/buildValuesClause");
 
 exports.createResort = async (req, res) => {
-  const { name, location, description, ownerName, ownerEmail } = req.body;
+  const { name, location, description, ownerName, ownerEmail, pricePerNight } =
+    req.body;
 
   let rooms = [];
   let amenities = [];
@@ -15,30 +16,39 @@ exports.createResort = async (req, res) => {
       .json({ message: "Invalid JSON format for rooms or amenities." });
   }
 
+  const numericPrice = Number(pricePerNight);
+
   if (
     !name ||
     !location ||
     !description ||
     !ownerName ||
     !ownerEmail ||
+    !Number.isFinite(numericPrice) ||
+    numericPrice <= 0 ||
     rooms.length === 0
   ) {
     return res.status(400).json({
       message:
-        "All fields (including resort owner name/email) and at least one room are required.",
+        "All fields (including resort owner name/email and a nightly price) and at least one room are required.",
     });
   }
 
-  if (!req.files || req.files.length === 0) {
+  // req.files is a flat array now (uploadResortImages.any()), since we
+  // accept both the resort gallery ('images') and each room's own photos
+  // ('roomImages_0', 'roomImages_1', ...) in one request.
+  const allFiles = req.files || [];
+  const galleryFiles = allFiles.filter((f) => f.fieldname === "images");
+  const imageUrls = galleryFiles.map((file) => file.path);
+
+  if (imageUrls.length === 0) {
     return res.status(400).json({ message: "At least one image is required." });
   }
 
-  const imageUrls = req.files.map((file) => file.path);
-
   try {
     const resortResult = await db.query(
-      "INSERT INTO resorts (name, location, description, owner_name, owner_email) VALUES ($1, $2, $3, $4, $5) RETURNING id",
-      [name, location, description, ownerName, ownerEmail],
+      "INSERT INTO resorts (name, location, description, owner_name, owner_email, price_per_night) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id",
+      [name, location, description, ownerName, ownerEmail, numericPrice],
     );
     const resortId = resortResult[0].id;
 
@@ -59,13 +69,29 @@ exports.createResort = async (req, res) => {
       console.error("Error setting cover image:", errCover),
     );
 
-    // Insert rooms
-    const roomValues = rooms.map((room) => [resortId, room.name, room.price]);
-    const roomClause = buildValuesClause(roomValues);
-    await db.query(
-      `INSERT INTO rooms (resort_id, name, price) VALUES ${roomClause.placeholders}`,
-      roomClause.values,
-    );
+    // Rooms are purely informational now (no price, no selection) -- just
+    // what's included in the stay. Each room's photos come in under
+    // fieldname `roomImages_<index>`, index matching its position in the
+    // `rooms` array submitted alongside it.
+    for (let i = 0; i < rooms.length; i++) {
+      const roomResult = await db.query(
+        "INSERT INTO rooms (resort_id, name) VALUES ($1, $2) RETURNING id",
+        [resortId, rooms[i].name],
+      );
+      const roomId = roomResult[0].id;
+
+      const roomFiles = allFiles.filter(
+        (f) => f.fieldname === `roomImages_${i}`,
+      );
+      if (roomFiles.length > 0) {
+        const roomImageValues = roomFiles.map((f) => [roomId, f.path]);
+        const roomImageClause = buildValuesClause(roomImageValues);
+        await db.query(
+          `INSERT INTO room_images (room_id, image_url) VALUES ${roomImageClause.placeholders}`,
+          roomImageClause.values,
+        );
+      }
+    }
 
     // Insert amenities, if any
     if (amenities.length > 0) {
@@ -132,8 +158,13 @@ exports.getResortById = async (req, res) => {
     const resort = resortResults[0];
 
     const roomResults = await db.query(
-      "SELECT id, name, price FROM rooms WHERE resort_id = $1",
+      "SELECT id, name FROM rooms WHERE resort_id = $1",
       [id],
+    );
+    const roomImageResults = await db.query(
+      `SELECT room_id, id, image_url FROM room_images
+        WHERE room_id = ANY($1::int[])`,
+      [roomResults.map((r) => r.id)],
     );
     const amenityResults = await db.query(
       "SELECT amenity FROM resort_amenities WHERE resort_id = $1",
@@ -149,7 +180,10 @@ exports.getResortById = async (req, res) => {
       [id],
     );
 
-    resort.rooms = roomResults;
+    resort.rooms = roomResults.map((room) => ({
+      ...room,
+      images: roomImageResults.filter((img) => img.room_id === room.id),
+    }));
     resort.amenities = amenityResults.map((a) => a.amenity);
     resort.images = imageResults; // [{ id, image_url }, ...] - full gallery for the carousel
     resort.rating = {
@@ -182,9 +216,10 @@ exports.deleteResort = async (req, res) => {
 
 exports.updateResort = async (req, res) => {
   const { id } = req.params;
-  const { name, location, description, ownerName, ownerEmail } = req.body;
+  const { name, location, description, ownerName, ownerEmail, pricePerNight } =
+    req.body;
 
-  let rooms = [];
+  let rooms = []; // [{ id?: number, name: string, existingImages?: string[] }, ...]
   let amenities = [];
   let keepImages = []; // image_urls of existing gallery images the admin did NOT remove
 
@@ -198,9 +233,15 @@ exports.updateResort = async (req, res) => {
       .json({ message: "Invalid JSON for rooms, amenities, or images." });
   }
 
-  // req.files comes from uploadResortImages.array('images', 10) - any newly added photos
-  const newImageUrls = req.files ? req.files.map((file) => file.path) : [];
+  // req.files is a flat array now (uploadResortImages.any()): the resort
+  // gallery uses fieldname 'images', each room's new photos use
+  // 'roomImages_<index>' where index is that room's position in `rooms`.
+  const allFiles = req.files || [];
+  const galleryFiles = allFiles.filter((f) => f.fieldname === "images");
+  const newImageUrls = galleryFiles.map((file) => file.path);
   const finalImages = [...keepImages, ...newImageUrls];
+
+  const numericPrice = Number(pricePerNight);
 
   if (
     !name ||
@@ -208,11 +249,13 @@ exports.updateResort = async (req, res) => {
     !description ||
     !ownerName ||
     !ownerEmail ||
+    !Number.isFinite(numericPrice) ||
+    numericPrice <= 0 ||
     rooms.length === 0
   ) {
     return res.status(400).json({
       message:
-        "All required fields (including resort owner name/email) must be filled.",
+        "All required fields (including resort owner name/email and a nightly price) must be filled.",
     });
   }
 
@@ -224,8 +267,17 @@ exports.updateResort = async (req, res) => {
     const coverImage = finalImages[0]; // legacy single-image column used by listing/search cards
 
     await db.query(
-      `UPDATE resorts SET name = $1, location = $2, description = $3, image = $4, owner_name = $5, owner_email = $6 WHERE id = $7`,
-      [name, location, description, coverImage, ownerName, ownerEmail, id],
+      `UPDATE resorts SET name = $1, location = $2, description = $3, image = $4, owner_name = $5, owner_email = $6, price_per_night = $7 WHERE id = $8`,
+      [
+        name,
+        location,
+        description,
+        coverImage,
+        ownerName,
+        ownerEmail,
+        numericPrice,
+        id,
+      ],
     );
 
     // Replace the gallery with exactly what the admin submitted (kept + new)
@@ -237,14 +289,63 @@ exports.updateResort = async (req, res) => {
       imageClause.values,
     );
 
-    await db.query(`DELETE FROM rooms WHERE resort_id = $1`, [id]);
-    if (rooms.length > 0) {
-      const roomValues = rooms.map((room) => [id, room.name, room.price]);
-      const roomClause = buildValuesClause(roomValues);
+    // Rooms: reconcile rather than wipe-and-reinsert, so a room's existing
+    // photos survive an edit unless the admin actually removed them.
+    // A room in the submitted list with an `id` is an existing room being
+    // kept/edited; one without an `id` is brand new. Any existing room NOT
+    // present in the submitted list was removed by the admin.
+    const existingRoomRows = await db.query(
+      "SELECT id FROM rooms WHERE resort_id = $1",
+      [id],
+    );
+    const submittedIds = rooms.filter((r) => r.id).map((r) => r.id);
+    const removedRoomIds = existingRoomRows
+      .map((r) => r.id)
+      .filter((existingId) => !submittedIds.includes(existingId));
+
+    if (removedRoomIds.length > 0) {
       await db.query(
-        `INSERT INTO rooms (resort_id, name, price) VALUES ${roomClause.placeholders}`,
-        roomClause.values,
+        "DELETE FROM rooms WHERE id = ANY($1::int[]) AND resort_id = $2",
+        [removedRoomIds, id],
       );
+    }
+
+    for (let i = 0; i < rooms.length; i++) {
+      const room = rooms[i];
+      const roomKeepImages = room.existingImages || [];
+      const roomNewFiles = allFiles.filter(
+        (f) => f.fieldname === `roomImages_${i}`,
+      );
+
+      let roomId = room.id;
+      if (roomId) {
+        await db.query("UPDATE rooms SET name = $1 WHERE id = $2", [
+          room.name,
+          roomId,
+        ]);
+        // Drop any of this room's photos the admin didn't keep. Works for
+        // an empty keep-list too: `= ANY('{}')` is never true, so NOT(...)
+        // deletes everything, which is exactly "removed all photos".
+        await db.query(
+          "DELETE FROM room_images WHERE room_id = $1 AND NOT (image_url = ANY($2::text[]))",
+          [roomId, roomKeepImages],
+        );
+      } else {
+        const roomResult = await db.query(
+          "INSERT INTO rooms (resort_id, name) VALUES ($1, $2) RETURNING id",
+          [id, room.name],
+        );
+        roomId = roomResult[0].id;
+      }
+
+      if (roomNewFiles.length > 0) {
+        const roomImageValues = roomNewFiles.map((f) => [roomId, f.path]);
+        const roomImageClause = buildValuesClause(roomImageValues);
+        await db.query(
+          `INSERT INTO room_images (room_id, image_url) VALUES ${roomImageClause.placeholders}`,
+          roomImageClause.values,
+        );
+      }
     }
 
     await db.query(`DELETE FROM resort_amenities WHERE resort_id = $1`, [id]);
