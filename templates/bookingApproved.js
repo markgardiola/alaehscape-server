@@ -12,6 +12,7 @@
 module.exports = ({
   full_name,
   resort,
+  stay_type_name,
   checkIn,
   checkOut,
   adults,
@@ -29,6 +30,14 @@ module.exports = ({
 
     <table style="width:100%;border-collapse:collapse;margin-bottom:1.5em">
       <tbody>
+        ${
+          stay_type_name
+            ? `<tr>
+          <td style="padding:6px 0"><b>Package:</b></td>
+          <td style="padding:6px 0">${stay_type_name}</td>
+        </tr>`
+            : ""
+        }
         <tr>
           <td style="padding:6px 0"><b>Check‑in:</b></td>
           <td style="padding:6px 0">${checkIn}</td>

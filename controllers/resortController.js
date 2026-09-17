@@ -179,6 +179,15 @@ exports.getResortById = async (req, res) => {
        FROM reviews WHERE resort_id = $1`,
       [id],
     );
+    const stayTypeResults = await db.query(
+      `SELECT id, name,
+              TO_CHAR(check_in_time, 'HH24:MI') AS check_in_time,
+              TO_CHAR(check_out_time, 'HH24:MI') AS check_out_time,
+              spans_next_day, price
+         FROM stay_types WHERE resort_id = $1
+        ORDER BY created_at ASC`,
+      [id],
+    );
 
     resort.rooms = roomResults.map((room) => ({
       ...room,
@@ -186,6 +195,7 @@ exports.getResortById = async (req, res) => {
     }));
     resort.amenities = amenityResults.map((a) => a.amenity);
     resort.images = imageResults; // [{ id, image_url }, ...] - full gallery for the carousel
+    resort.stayTypes = stayTypeResults;
     resort.rating = {
       average: ratingResults[0].average,
       count: ratingResults[0].count,

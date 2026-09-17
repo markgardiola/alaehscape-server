@@ -13,7 +13,7 @@ const {
 } = require("../utils/paypalClient");
 const { notifyUser, notifyAdmin } = require("../utils/notify");
 
-const ADMIN_EMAIL = "alaehscape@gmail.com";
+const ADMIN_EMAIL = "alai.eh2526@gmail.com";
 
 // Emails the resort owner: 'new_booking' once a booking actually goes
 // Confirmed (so they know to expect a guest), or 'cancelled' when a
@@ -22,8 +22,9 @@ const ADMIN_EMAIL = "alaehscape@gmail.com";
 const notifyResortOwner = async (bookingId, event) => {
   const rows = await db.query(
     `SELECT b.full_name AS guest_name,
-            TO_CHAR(b.check_in,  'FMMonth FMDD, YYYY') AS "checkIn",
-            TO_CHAR(b.check_out, 'FMMonth FMDD, YYYY') AS "checkOut",
+            b.stay_type_name,
+            TO_CHAR(b.check_in,  'FMMonth FMDD, YYYY "at" FMHH12:MI AM') AS "checkIn",
+            TO_CHAR(b.check_out, 'FMMonth FMDD, YYYY "at" FMHH12:MI AM') AS "checkOut",
             b.adults,
             b.children,
             r.name AS resort,
@@ -42,6 +43,7 @@ const notifyResortOwner = async (bookingId, event) => {
     owner_name: booking.owner_name || "there",
     resort: booking.resort,
     guest_name: booking.guest_name,
+    stay_type_name: booking.stay_type_name,
     checkIn: booking.checkIn,
     checkOut: booking.checkOut,
     adults: booking.adults,
@@ -78,8 +80,9 @@ const sendBookingStatusEmail = async (
   const rows = await db.query(
     `SELECT b.id,
             b.user_id,
-            TO_CHAR(b.check_in,  'FMMonth FMDD, YYYY') AS "checkIn",
-            TO_CHAR(b.check_out, 'FMMonth FMDD, YYYY') AS "checkOut",
+            b.stay_type_name,
+            TO_CHAR(b.check_in,  'FMMonth FMDD, YYYY "at" FMHH12:MI AM') AS "checkIn",
+            TO_CHAR(b.check_out, 'FMMonth FMDD, YYYY "at" FMHH12:MI AM') AS "checkOut",
             b.adults,
             b.children,
             b.full_name,
@@ -102,6 +105,7 @@ const sendBookingStatusEmail = async (
     html = tplApproved({
       full_name: booking.full_name,
       resort: booking.resort,
+      stay_type_name: booking.stay_type_name,
       checkIn: booking.checkIn,
       checkOut: booking.checkOut,
       adults: booking.adults,
@@ -171,15 +175,6 @@ const refundPaypalPayment = async (captureId, note) => {
   }
 };
 
-// Nights between two YYYY-MM-DD dates. Assumes checkOut is already
-// validated to be after checkIn (see submitBooking).
-const nightsBetween = (checkIn, checkOut) => {
-  const oneDay = 1000 * 60 * 60 * 24;
-  const inDate = new Date(checkIn);
-  const outDate = new Date(checkOut);
-  return Math.round((outDate - inDate) / oneDay);
-};
-
 exports.getTotalBookings = async (req, res) => {
   try {
     const results = await db.query(
@@ -202,13 +197,16 @@ exports.getResortBookedDates = async (req, res) => {
   const { resortId } = req.params;
 
   try {
+    // Full timestamps now, not just dates -- the frontend needs exact
+    // check-in/check-out times to apply the same 2-hour buffer rule the
+    // server enforces at booking time.
     const rows = await db.query(
-      `SELECT TO_CHAR(check_in, 'YYYY-MM-DD') AS check_in,
-              TO_CHAR(check_out, 'YYYY-MM-DD') AS check_out
+      `SELECT TO_CHAR(check_in, 'YYYY-MM-DD HH24:MI:SS') AS check_in,
+              TO_CHAR(check_out, 'YYYY-MM-DD HH24:MI:SS') AS check_out
          FROM bookings
         WHERE resort_id = $1
           AND status IN ('Pending', 'Confirmed', 'Refund Requested')
-          AND check_out >= CURRENT_DATE`,
+          AND check_out >= NOW() - INTERVAL '1 day'`,
       [resortId],
     );
     res.json(rows);
@@ -223,77 +221,100 @@ exports.getResortBookedDates = async (req, res) => {
 exports.submitBooking = async (req, res) => {
   const {
     resortId,
+    stayTypeId,
+    date,
     fullName,
     email,
     mobile,
     address,
-    checkIn,
-    checkOut,
     adults,
     children,
   } = req.body;
 
   const userId = req.userId;
 
-  const nights = nightsBetween(checkIn, checkOut);
-  if (!nights || nights < 1) {
-    return res
-      .status(400)
-      .json({ message: "Check-out date must be after check-in date." });
+  if (!date) {
+    return res.status(400).json({ message: "Please select a date." });
   }
 
   try {
-    // Price always comes from the DB, never the client -- a request could
-    // otherwise be tampered with to book at any price.
-    const resortRows = await db.query(
-      "SELECT price_per_night FROM resorts WHERE id = $1",
-      [resortId],
+    // Stay type's price and times always come from the DB, never the
+    // client -- a request could otherwise be tampered with to book at any
+    // price or time.
+    const stayTypeRows = await db.query(
+      `SELECT id, name, check_in_time, check_out_time, spans_next_day, price
+         FROM stay_types WHERE id = $1 AND resort_id = $2`,
+      [stayTypeId, resortId],
     );
 
-    if (resortRows.length === 0) {
-      return res.status(400).json({ message: "Resort not found." });
+    if (stayTypeRows.length === 0) {
+      return res
+        .status(400)
+        .json({ message: "Please select a valid stay type." });
     }
 
-    // Guards against double-booking: two date ranges [a,b) and [c,d) overlap
-    // when a < d AND c < b. This is a private resort -- one booking blocks
-    // the whole property, so this checks resort_id, not a specific room.
-    // Anything not Cancelled still holds the resort -- including Pending,
-    // since two people could otherwise both "book" the same dates while
-    // one is still on the payment step.
+    const stayType = stayTypeRows[0];
+
+    // Computed as plain strings (never materialized as JS Date objects)
+    // so nothing here can drift across a timezone conversion -- the exact
+    // bug that caused the earlier calendar off-by-one issue.
+    const computedRows = await db.query(
+      `SELECT
+         TO_CHAR($1::date + $2::time, 'YYYY-MM-DD HH24:MI:SS') AS check_in,
+         TO_CHAR($1::date + ($3::int * INTERVAL '1 day') + $4::time, 'YYYY-MM-DD HH24:MI:SS') AS check_out`,
+      [
+        date,
+        stayType.check_in_time,
+        stayType.spans_next_day ? 1 : 0,
+        stayType.check_out_time,
+      ],
+    );
+    const checkInStr = computedRows[0].check_in;
+    const checkOutStr = computedRows[0].check_out;
+
+    // Guards against double-booking, with a 2-hour cleaning buffer: two
+    // bookings only conflict if there's LESS than a 2-hour gap between one
+    // ending and the other starting. This is a private resort -- one
+    // booking holds the whole property, so this checks resort_id, not a
+    // specific room or stay type. Anything not Cancelled still holds the
+    // resort -- including Pending, since two people could otherwise both
+    // "book" the same slot while one is still on the payment step.
     const overlapRows = await db.query(
       `SELECT id FROM bookings
         WHERE resort_id = $1
           AND status IN ('Pending', 'Confirmed', 'Refund Requested')
-          AND check_in < $2 AND check_out > $3`,
-      [resortId, checkOut, checkIn],
+          AND check_out + INTERVAL '2 hours' > $2::timestamp
+          AND $3::timestamp + INTERVAL '2 hours' > check_in`,
+      [resortId, checkInStr, checkOutStr],
     );
 
     if (overlapRows.length > 0) {
       return res.status(409).json({
         message:
-          "Sorry, this resort is no longer available for the selected dates. Please choose different dates.",
+          "Sorry, this resort is no longer available for that date and stay type. Please choose a different date.",
       });
     }
 
-    const pricePerNight = Number(resortRows[0].price_per_night);
-    const totalPrice = Math.round(pricePerNight * nights * 100) / 100;
+    const totalPrice = Number(stayType.price);
 
     const sql = `
       INSERT INTO bookings
-      (user_id, resort_id, full_name, email, mobile, address, check_in, check_out, adults, children, total_price, original_price)
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $11)
+      (user_id, resort_id, stay_type_id, stay_type_name, full_name, email, mobile, address, check_in, check_out, adults, children, total_price, original_price)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::timestamp, $10::timestamp, $11, $12, $13, $13)
       RETURNING id
     `;
 
     const values = [
       userId,
       resortId,
+      stayType.id,
+      stayType.name,
       fullName,
       email,
       mobile,
       address,
-      checkIn,
-      checkOut,
+      checkInStr,
+      checkOutStr,
       adults,
       children,
       totalPrice,
@@ -304,8 +325,6 @@ exports.submitBooking = async (req, res) => {
     res.status(201).json({
       message: "Booking submitted successfully",
       bookingId: result[0].id,
-      nights,
-      pricePerNight,
       totalPrice,
     });
   } catch (err) {
@@ -320,8 +339,11 @@ exports.getAllBookings = async (req, res) => {
       bookings.id AS booking_id,
       users.username,
       resorts.name AS resort_name,
+      bookings.stay_type_name,
       bookings.check_in,
       bookings.check_out,
+      TO_CHAR(bookings.check_in,  'FMMon FMDD, YYYY FMHH12:MI AM') AS check_in_display,
+      TO_CHAR(bookings.check_out, 'FMMon FMDD, YYYY FMHH12:MI AM') AS check_out_display,
       bookings.total_price,
       bookings.payment_method,
       bookings.cancellation_reason,
@@ -348,8 +370,11 @@ exports.getRefundRequests = async (req, res) => {
       bookings.id AS booking_id,
       users.username,
       resorts.name AS resort_name,
+      bookings.stay_type_name,
       bookings.check_in,
       bookings.check_out,
+      TO_CHAR(bookings.check_in,  'FMMon FMDD, YYYY FMHH12:MI AM') AS check_in_display,
+      TO_CHAR(bookings.check_out, 'FMMon FMDD, YYYY FMHH12:MI AM') AS check_out_display,
       bookings.total_price,
       bookings.payment_method,
       bookings.cancellation_reason,
@@ -415,8 +440,14 @@ exports.getBookingById = async (req, res) => {
   // Admins can view any booking; regular users only their own.
   const sql =
     req.userRole === "admin"
-      ? `SELECT b.*, r.name AS resort_name FROM bookings b JOIN resorts r ON b.resort_id = r.id WHERE b.id = $1`
-      : `SELECT b.*, r.name AS resort_name FROM bookings b JOIN resorts r ON b.resort_id = r.id WHERE b.id = $1 AND b.user_id = $2`;
+      ? `SELECT b.*, r.name AS resort_name,
+                TO_CHAR(b.check_in,  'FMMon FMDD, YYYY FMHH12:MI AM') AS check_in_display,
+                TO_CHAR(b.check_out, 'FMMon FMDD, YYYY FMHH12:MI AM') AS check_out_display
+           FROM bookings b JOIN resorts r ON b.resort_id = r.id WHERE b.id = $1`
+      : `SELECT b.*, r.name AS resort_name,
+                TO_CHAR(b.check_in,  'FMMon FMDD, YYYY FMHH12:MI AM') AS check_in_display,
+                TO_CHAR(b.check_out, 'FMMon FMDD, YYYY FMHH12:MI AM') AS check_out_display
+           FROM bookings b JOIN resorts r ON b.resort_id = r.id WHERE b.id = $1 AND b.user_id = $2`;
 
   const params =
     req.userRole === "admin" ? [bookingId] : [bookingId, req.userId];
@@ -512,8 +543,11 @@ exports.getUserBooking = async (req, res) => {
       b.id,
       b.resort_id,
       r.name AS resort_name,
+      b.stay_type_name,
       b.check_in,
       b.check_out,
+      TO_CHAR(b.check_in,  'FMMon FMDD, YYYY FMHH12:MI AM') AS check_in_display,
+      TO_CHAR(b.check_out, 'FMMon FMDD, YYYY FMHH12:MI AM') AS check_out_display,
       b.adults,
       b.children,
       b.total_price,
