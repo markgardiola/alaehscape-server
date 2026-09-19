@@ -2,21 +2,20 @@ const db = require("../config/connectDB");
 const { buildValuesClause } = require("../utils/buildValuesClause");
 
 exports.createResort = async (req, res) => {
-  const { name, location, description, ownerName, ownerEmail, pricePerNight } =
-    req.body;
+  const { name, location, description, ownerName, ownerEmail } = req.body;
 
   let rooms = [];
   let amenities = [];
+  let stayTypes = [];
   try {
     rooms = JSON.parse(req.body.rooms);
     amenities = JSON.parse(req.body.amenities || "[]");
+    stayTypes = JSON.parse(req.body.stayTypes || "[]");
   } catch (error) {
-    return res
-      .status(400)
-      .json({ message: "Invalid JSON format for rooms or amenities." });
+    return res.status(400).json({
+      message: "Invalid JSON format for rooms, amenities, or stay types.",
+    });
   }
-
-  const numericPrice = Number(pricePerNight);
 
   if (
     !name ||
@@ -24,14 +23,29 @@ exports.createResort = async (req, res) => {
     !description ||
     !ownerName ||
     !ownerEmail ||
-    !Number.isFinite(numericPrice) ||
-    numericPrice <= 0 ||
-    rooms.length === 0
+    rooms.length === 0 ||
+    stayTypes.length === 0
   ) {
     return res.status(400).json({
       message:
-        "All fields (including resort owner name/email and a nightly price) and at least one room are required.",
+        "All fields (including resort owner name/email) and at least one room and one stay type are required.",
     });
+  }
+
+  for (const stayType of stayTypes) {
+    const numericStayPrice = Number(stayType.price);
+    if (
+      !stayType.name ||
+      !stayType.checkInTime ||
+      !stayType.checkOutTime ||
+      !Number.isFinite(numericStayPrice) ||
+      numericStayPrice <= 0
+    ) {
+      return res.status(400).json({
+        message:
+          "Each stay type needs a name, check-in/out time, and a valid price.",
+      });
+    }
   }
 
   // req.files is a flat array now (uploadResortImages.any()), since we
@@ -47,8 +61,8 @@ exports.createResort = async (req, res) => {
 
   try {
     const resortResult = await db.query(
-      "INSERT INTO resorts (name, location, description, owner_name, owner_email, price_per_night) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id",
-      [name, location, description, ownerName, ownerEmail, numericPrice],
+      "INSERT INTO resorts (name, location, description, owner_name, owner_email) VALUES ($1, $2, $3, $4, $5) RETURNING id",
+      [name, location, description, ownerName, ownerEmail],
     );
     const resortId = resortResult[0].id;
 
@@ -101,15 +115,26 @@ exports.createResort = async (req, res) => {
         `INSERT INTO resort_amenities (resort_id, amenity) VALUES ${amenityClause.placeholders}`,
         amenityClause.values,
       );
-
-      return res.status(201).json({
-        message:
-          "Resort created successfully with images, rooms, and amenities!",
-      });
     }
 
+    // Insert stay types (Overnight, Day Tour, etc.) -- at least one is
+    // required, validated above.
+    const stayTypeValues = stayTypes.map((st) => [
+      resortId,
+      st.name.trim(),
+      st.checkInTime,
+      st.checkOutTime,
+      !!st.spansNextDay,
+      st.price,
+    ]);
+    const stayTypeClause = buildValuesClause(stayTypeValues);
+    await db.query(
+      `INSERT INTO stay_types (resort_id, name, check_in_time, check_out_time, spans_next_day, price) VALUES ${stayTypeClause.placeholders}`,
+      stayTypeClause.values,
+    );
+
     return res.status(201).json({
-      message: "Resort created successfully with images and rooms!",
+      message: "Resort created successfully!",
     });
   } catch (err) {
     console.error("Error creating resort:", err);
@@ -226,8 +251,7 @@ exports.deleteResort = async (req, res) => {
 
 exports.updateResort = async (req, res) => {
   const { id } = req.params;
-  const { name, location, description, ownerName, ownerEmail, pricePerNight } =
-    req.body;
+  const { name, location, description, ownerName, ownerEmail } = req.body;
 
   let rooms = []; // [{ id?: number, name: string, existingImages?: string[] }, ...]
   let amenities = [];
@@ -251,21 +275,17 @@ exports.updateResort = async (req, res) => {
   const newImageUrls = galleryFiles.map((file) => file.path);
   const finalImages = [...keepImages, ...newImageUrls];
 
-  const numericPrice = Number(pricePerNight);
-
   if (
     !name ||
     !location ||
     !description ||
     !ownerName ||
     !ownerEmail ||
-    !Number.isFinite(numericPrice) ||
-    numericPrice <= 0 ||
     rooms.length === 0
   ) {
     return res.status(400).json({
       message:
-        "All required fields (including resort owner name/email and a nightly price) must be filled.",
+        "All required fields (including resort owner name/email) must be filled.",
     });
   }
 
@@ -277,17 +297,8 @@ exports.updateResort = async (req, res) => {
     const coverImage = finalImages[0]; // legacy single-image column used by listing/search cards
 
     await db.query(
-      `UPDATE resorts SET name = $1, location = $2, description = $3, image = $4, owner_name = $5, owner_email = $6, price_per_night = $7 WHERE id = $8`,
-      [
-        name,
-        location,
-        description,
-        coverImage,
-        ownerName,
-        ownerEmail,
-        numericPrice,
-        id,
-      ],
+      `UPDATE resorts SET name = $1, location = $2, description = $3, image = $4, owner_name = $5, owner_email = $6 WHERE id = $7`,
+      [name, location, description, coverImage, ownerName, ownerEmail, id],
     );
 
     // Replace the gallery with exactly what the admin submitted (kept + new)

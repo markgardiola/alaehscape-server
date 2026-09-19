@@ -407,6 +407,23 @@ exports.getRefundRequestCount = async (req, res) => {
   }
 };
 
+// A GCash booking sits at Pending until an admin manually checks the
+// uploaded receipt and confirms it -- unlike PayPal, which auto-confirms.
+// This badge exists to make sure those don't get missed. It clears itself
+// naturally once the admin approves (-> Confirmed) or the booking is no
+// longer Pending for any other reason.
+exports.getGcashPendingCount = async (req, res) => {
+  try {
+    const results = await db.query(
+      "SELECT COUNT(*) AS \"count\" FROM bookings WHERE status = 'Pending' AND payment_method = 'gcash'",
+    );
+    res.json({ count: Number(results[0].count) });
+  } catch (err) {
+    console.error("Error counting pending GCash bookings:", err);
+    res.status(500).json({ error: "Internal Server Error" });
+  }
+};
+
 exports.uploadPaymentReceipt = async (req, res) => {
   const { bookingId } = req.body;
   const receiptImage = req.file.path;

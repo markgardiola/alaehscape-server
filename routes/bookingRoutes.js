@@ -28,6 +28,12 @@ router.get(
   requireAdmin,
   bookingController.getRefundRequestCount,
 );
+router.get(
+  "/bookings/gcash-pending/count",
+  verifyToken,
+  requireAdmin,
+  bookingController.getGcashPendingCount,
+);
 router.get("/total_bookings", bookingController.getTotalBookings);
 router.post(
   "/upload_receipt",
