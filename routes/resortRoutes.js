@@ -28,6 +28,9 @@ router.put(
   uploadResortImages.any(),
   resortController.updateResort,
 );
-router.get("/resorts/location/:location", resortController.getResortByLocation);
+router.get(
+  "/resorts/barangay/:barangay",
+  resortController.getResortsByBarangay,
+);
 
 module.exports = router;

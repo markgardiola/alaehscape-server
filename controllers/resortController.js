@@ -1,8 +1,10 @@
 const db = require("../config/connectDB");
 const { buildValuesClause } = require("../utils/buildValuesClause");
+const { ensureDestinationExists } = require("./destinationController");
 
 exports.createResort = async (req, res) => {
-  const { name, location, description, ownerName, ownerEmail } = req.body;
+  const { name, location, barangay, description, ownerName, ownerEmail } =
+    req.body;
 
   let rooms = [];
   let amenities = [];
@@ -20,6 +22,7 @@ exports.createResort = async (req, res) => {
   if (
     !name ||
     !location ||
+    !barangay ||
     !description ||
     !ownerName ||
     !ownerEmail ||
@@ -28,7 +31,7 @@ exports.createResort = async (req, res) => {
   ) {
     return res.status(400).json({
       message:
-        "All fields (including resort owner name/email) and at least one room and one stay type are required.",
+        "All fields (including barangay, resort owner name/email) and at least one room and one stay type are required.",
     });
   }
 
@@ -61,8 +64,8 @@ exports.createResort = async (req, res) => {
 
   try {
     const resortResult = await db.query(
-      "INSERT INTO resorts (name, location, description, owner_name, owner_email) VALUES ($1, $2, $3, $4, $5) RETURNING id",
-      [name, location, description, ownerName, ownerEmail],
+      "INSERT INTO resorts (name, location, barangay, description, owner_name, owner_email) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id",
+      [name, location, barangay, description, ownerName, ownerEmail],
     );
     const resortId = resortResult[0].id;
 
@@ -82,6 +85,10 @@ exports.createResort = async (req, res) => {
     ]).catch((errCover) =>
       console.error("Error setting cover image:", errCover),
     );
+
+    // Auto-create a destination card for this barangay if it's the first
+    // resort listed there.
+    await ensureDestinationExists(barangay, imageUrls[0]);
 
     // Rooms are purely informational now (no price, no selection) -- just
     // what's included in the stay. Each room's photos come in under
@@ -251,7 +258,8 @@ exports.deleteResort = async (req, res) => {
 
 exports.updateResort = async (req, res) => {
   const { id } = req.params;
-  const { name, location, description, ownerName, ownerEmail } = req.body;
+  const { name, location, barangay, description, ownerName, ownerEmail } =
+    req.body;
 
   let rooms = []; // [{ id?: number, name: string, existingImages?: string[] }, ...]
   let amenities = [];
@@ -278,6 +286,7 @@ exports.updateResort = async (req, res) => {
   if (
     !name ||
     !location ||
+    !barangay ||
     !description ||
     !ownerName ||
     !ownerEmail ||
@@ -297,9 +306,22 @@ exports.updateResort = async (req, res) => {
     const coverImage = finalImages[0]; // legacy single-image column used by listing/search cards
 
     await db.query(
-      `UPDATE resorts SET name = $1, location = $2, description = $3, image = $4, owner_name = $5, owner_email = $6 WHERE id = $7`,
-      [name, location, description, coverImage, ownerName, ownerEmail, id],
+      `UPDATE resorts SET name = $1, location = $2, barangay = $3, description = $4, image = $5, owner_name = $6, owner_email = $7 WHERE id = $8`,
+      [
+        name,
+        location,
+        barangay,
+        description,
+        coverImage,
+        ownerName,
+        ownerEmail,
+        id,
+      ],
     );
+
+    // Auto-create a destination card if the admin changed this resort's
+    // barangay to one that doesn't have a card yet.
+    await ensureDestinationExists(barangay, coverImage);
 
     // Replace the gallery with exactly what the admin submitted (kept + new)
     await db.query(`DELETE FROM resort_images WHERE resort_id = $1`, [id]);
@@ -386,8 +408,8 @@ exports.updateResort = async (req, res) => {
   }
 };
 
-exports.getResortByLocation = async (req, res) => {
-  const location = req.params.location;
+exports.getResortsByBarangay = async (req, res) => {
+  const barangay = req.params.barangay;
 
   try {
     // Grouping by r.id (the primary key) lets Postgres select all of r.*
@@ -398,10 +420,10 @@ exports.getResortByLocation = async (req, res) => {
               COUNT(rev.id)::int AS review_count
        FROM resorts r
        LEFT JOIN reviews rev ON rev.resort_id = r.id
-       WHERE r.location = $1
+       WHERE LOWER(r.barangay) = LOWER($1)
        GROUP BY r.id
        ORDER BY r.created_at DESC`,
-      [location],
+      [barangay],
     );
 
     const resorts = results.map(({ avg_rating, review_count, ...resort }) => ({
@@ -411,7 +433,7 @@ exports.getResortByLocation = async (req, res) => {
 
     res.json(resorts);
   } catch (err) {
-    console.error("Error fetching resorts by location:", err);
+    console.error("Error fetching resorts by barangay:", err);
     res.status(500).json({ error: "Database error" });
   }
 };
