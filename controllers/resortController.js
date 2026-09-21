@@ -1,6 +1,7 @@
 const db = require("../config/connectDB");
 const { buildValuesClause } = require("../utils/buildValuesClause");
 const { ensureDestinationExists } = require("./destinationController");
+const { ensureOwnerAccount } = require("./ownerController");
 
 exports.createResort = async (req, res) => {
   const { name, location, barangay, description, ownerName, ownerEmail } =
@@ -89,6 +90,16 @@ exports.createResort = async (req, res) => {
     // Auto-create a destination card for this barangay if it's the first
     // resort listed there.
     await ensureDestinationExists(barangay, imageUrls[0]);
+
+    // Auto-create (or reuse) the owner's portal account and link it to
+    // this resort, so they can see their bookings/reviews/revenue.
+    const ownerUserId = await ensureOwnerAccount(ownerEmail, ownerName, name);
+    if (ownerUserId) {
+      await db.query("UPDATE resorts SET owner_user_id = $1 WHERE id = $2", [
+        ownerUserId,
+        resortId,
+      ]);
+    }
 
     // Rooms are purely informational now (no price, no selection) -- just
     // what's included in the stay. Each room's photos come in under
@@ -322,6 +333,17 @@ exports.updateResort = async (req, res) => {
     // Auto-create a destination card if the admin changed this resort's
     // barangay to one that doesn't have a card yet.
     await ensureDestinationExists(barangay, coverImage);
+
+    // Re-link the owner account too, in case the admin changed the owner
+    // email -- e.g. to an existing owner's account (multi-resort owner) or
+    // a brand-new one (auto-created, welcome email sent).
+    const ownerUserId = await ensureOwnerAccount(ownerEmail, ownerName, name);
+    if (ownerUserId) {
+      await db.query("UPDATE resorts SET owner_user_id = $1 WHERE id = $2", [
+        ownerUserId,
+        id,
+      ]);
+    }
 
     // Replace the gallery with exactly what the admin submitted (kept + new)
     await db.query(`DELETE FROM resort_images WHERE resort_id = $1`, [id]);

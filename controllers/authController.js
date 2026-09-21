@@ -621,6 +621,13 @@ exports.login = async (req, res) => {
     }
 
     if (!user) {
+      result = await db.query("SELECT * FROM resort_owners WHERE email = $1", [
+        email,
+      ]);
+      user = result[0];
+    }
+
+    if (!user) {
       return res.status(404).json({ message: "User not found" });
     }
 
@@ -650,6 +657,32 @@ exports.adminLogin = async (req, res) => {
     await handleLogin(user, password, res);
   } catch (err) {
     console.error("Admin login error:", err);
+    res.status(500).json({ message: "Server error" });
+  }
+};
+
+// Used only by the resort owner sign-in page. Same reasoning as
+// adminLogin -- a dedicated table and a dedicated endpoint avoids any
+// ambiguity with the customer-facing users table.
+exports.ownerLogin = async (req, res) => {
+  const { email, password } = req.body;
+
+  try {
+    const result = await db.query(
+      "SELECT * FROM resort_owners WHERE email = $1",
+      [email],
+    );
+    const user = result[0];
+
+    if (!user) {
+      return res
+        .status(404)
+        .json({ message: "Resort owner account not found" });
+    }
+
+    await handleLogin(user, password, res);
+  } catch (err) {
+    console.error("Owner login error:", err);
     res.status(500).json({ message: "Server error" });
   }
 };

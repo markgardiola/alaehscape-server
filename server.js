@@ -14,6 +14,7 @@ const promoRoutes = require("./routes/promoRoutes");
 const stayTypeRoutes = require("./routes/stayTypeRoutes");
 const destinationRoutes = require("./routes/destinationRoutes");
 const analyticsRoutes = require("./routes/analyticsRoutes");
+const ownerRoutes = require("./routes/ownerRoutes");
 
 const port = process.env.PORT || 5000;
 
@@ -49,5 +50,6 @@ app.use("/api", promoRoutes);
 app.use("/api", stayTypeRoutes);
 app.use("/api", destinationRoutes);
 app.use("/api", analyticsRoutes);
+app.use("/api", ownerRoutes);
 
 app.listen(port, () => console.log(`Server running on port ${port}`));
