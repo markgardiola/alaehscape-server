@@ -23,6 +23,21 @@ router.post(
 );
 router.post("/password-reset/reset", authController.resetPassword);
 
+// Resort owner password recovery (email OTP only)
+router.post(
+  "/owner/password-reset/request-otp",
+  authController.requestOwnerPasswordResetOtp,
+);
+router.post(
+  "/owner/password-reset/resend-otp",
+  authController.resendOwnerPasswordResetOtp,
+);
+router.post(
+  "/owner/password-reset/verify-otp",
+  authController.verifyOwnerPasswordResetOtp,
+);
+router.post("/owner/password-reset/reset", authController.resetOwnerPassword);
+
 // Login
 router.post("/login", authController.login);
 router.post("/admin-login", authController.adminLogin);

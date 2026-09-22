@@ -603,6 +603,242 @@ exports.resetPassword = async (req, res) => {
 };
 
 // ---------------------------------------------------------------------
+// Resort owner password recovery (email OTP only -- no SMS option,
+// unlike the customer flow above, since owners aren't required to have
+// a phone number on file)
+// ---------------------------------------------------------------------
+
+exports.requestOwnerPasswordResetOtp = async (req, res) => {
+  const { email } = req.body;
+
+  if (!email) {
+    return res.status(400).json({ message: "Email is required." });
+  }
+
+  try {
+    const rows = await db.query(
+      "SELECT id, username FROM resort_owners WHERE email = $1",
+      [email],
+    );
+    if (rows.length === 0) {
+      return res
+        .status(404)
+        .json({
+          message: "We couldn't find an owner account with that email.",
+        });
+    }
+    const owner = rows[0];
+
+    const rateCheck = await canSendNewOtp(email, "owner_password_reset");
+    if (!rateCheck.ok) {
+      return res.status(429).json({ message: rateCheck.message });
+    }
+
+    await db.query(
+      `DELETE FROM otps WHERE identifier = $1 AND purpose = 'owner_password_reset' AND consumed_at IS NULL`,
+      [email],
+    );
+
+    const { code, otpId } = await createOtp({
+      identifier: email,
+      purpose: "owner_password_reset",
+      channel: "email",
+    });
+
+    try {
+      await sendEmail(
+        email,
+        "Reset your ALAI-eh Owner Portal password",
+        `<div style="font-family:Arial,Helvetica,sans-serif;color:#333;line-height:1.6">
+           <p>Hi ${owner.username},</p>
+           <p>Your password reset code is <b style="font-size:1.2em;letter-spacing:2px">${code}</b>.
+              It expires in ${OTP_TTL_MINUTES} minutes.</p>
+           <p>If you didn't request this, you can safely ignore this email -- your password won't change.</p>
+         </div>`,
+      );
+    } catch (sendErr) {
+      await discardOtp(otpId);
+      throw sendErr;
+    }
+
+    res.json({
+      message: "A verification code has been sent to your email.",
+      maskedEmail: maskEmail(email),
+    });
+  } catch (err) {
+    console.error("Owner password reset OTP request error:", err);
+    res
+      .status(500)
+      .json({ message: "Failed to send reset code. Please try again." });
+  }
+};
+
+exports.resendOwnerPasswordResetOtp = async (req, res) => {
+  const { email } = req.body;
+
+  try {
+    const pending = await getActiveOtp(email, "owner_password_reset");
+    if (!pending) {
+      return res.status(404).json({
+        message:
+          "No pending reset request found for this email. Please start over.",
+      });
+    }
+
+    const rateCheck = await canSendNewOtp(email, "owner_password_reset");
+    if (!rateCheck.ok) {
+      return res.status(429).json({ message: rateCheck.message });
+    }
+
+    const rows = await db.query(
+      "SELECT username FROM resort_owners WHERE email = $1",
+      [email],
+    );
+    const owner = rows[0];
+
+    await db.query(`UPDATE otps SET consumed_at = NOW() WHERE id = $1`, [
+      pending.id,
+    ]);
+
+    const { code, otpId } = await createOtp({
+      identifier: email,
+      purpose: "owner_password_reset",
+      channel: "email",
+    });
+
+    try {
+      await sendEmail(
+        email,
+        "Your new ALAI-eh Owner Portal reset code",
+        `<p>Hi ${owner.username},</p><p>Your new password reset code is <b>${code}</b>. It expires in ${OTP_TTL_MINUTES} minutes.</p>`,
+      );
+    } catch (sendErr) {
+      await discardOtp(otpId);
+      throw sendErr;
+    }
+
+    res.json({ message: "A new code has been sent." });
+  } catch (err) {
+    console.error("Resend owner password reset OTP error:", err);
+    res.status(500).json({ message: "Failed to resend code." });
+  }
+};
+
+exports.verifyOwnerPasswordResetOtp = async (req, res) => {
+  const { email, otp } = req.body;
+
+  if (!email || !otp) {
+    return res.status(400).json({ message: "Email and code are required." });
+  }
+
+  try {
+    const pending = await getActiveOtp(email, "owner_password_reset");
+    if (!pending) {
+      return res.status(400).json({
+        message:
+          "No pending reset request found, or it has expired. Please start over.",
+      });
+    }
+
+    if (new Date(pending.expires_at) < new Date()) {
+      return res
+        .status(400)
+        .json({ message: "This code has expired. Please request a new one." });
+    }
+
+    if (pending.attempts >= OTP_MAX_ATTEMPTS) {
+      return res.status(429).json({
+        message: "Too many incorrect attempts. Please request a new code.",
+      });
+    }
+
+    const isMatch = await compareOtp(otp, pending.otp_hash);
+    if (!isMatch) {
+      await db.query(`UPDATE otps SET attempts = attempts + 1 WHERE id = $1`, [
+        pending.id,
+      ]);
+      return res
+        .status(400)
+        .json({ message: "Incorrect code. Please try again." });
+    }
+
+    const resetToken = jwt.sign(
+      { purpose: "owner_password_reset", email, otpId: pending.id },
+      JWT_SECRET_KEY,
+      { expiresIn: "10m" },
+    );
+
+    res.json({ message: "Code verified.", resetToken });
+  } catch (err) {
+    console.error("Verify owner password reset OTP error:", err);
+    res
+      .status(500)
+      .json({ message: "Something went wrong verifying your code." });
+  }
+};
+
+exports.resetOwnerPassword = async (req, res) => {
+  const { resetToken, newPassword } = req.body;
+
+  if (!resetToken || !newPassword) {
+    return res
+      .status(400)
+      .json({ message: "Missing reset token or new password." });
+  }
+  if (newPassword.length < 6) {
+    return res
+      .status(400)
+      .json({ message: "Password must be at least 6 characters." });
+  }
+
+  let decoded;
+  try {
+    decoded = jwt.verify(resetToken, JWT_SECRET_KEY);
+  } catch {
+    return res
+      .status(400)
+      .json({ message: "This reset session has expired. Please start over." });
+  }
+
+  if (decoded.purpose !== "owner_password_reset") {
+    return res.status(400).json({ message: "Invalid reset token." });
+  }
+
+  try {
+    const otpRows = await db.query(
+      `SELECT id FROM otps
+        WHERE id = $1 AND identifier = $2 AND purpose = 'owner_password_reset' AND consumed_at IS NULL`,
+      [decoded.otpId, decoded.email],
+    );
+
+    if (otpRows.length === 0) {
+      return res.status(400).json({
+        message: "This reset link has already been used. Please start over.",
+      });
+    }
+
+    const passwordHash = await bcrypt.hash(newPassword, 10);
+    const result = await db.query(
+      "UPDATE resort_owners SET password = $1 WHERE email = $2 RETURNING id",
+      [passwordHash, decoded.email],
+    );
+
+    if (result.length === 0) {
+      return res.status(404).json({ message: "Account not found." });
+    }
+
+    await db.query(`UPDATE otps SET consumed_at = NOW() WHERE id = $1`, [
+      decoded.otpId,
+    ]);
+
+    res.json({ success: "Password reset successfully. You can now sign in." });
+  } catch (err) {
+    console.error("Reset owner password error:", err);
+    res.status(500).json({ message: "Failed to reset password." });
+  }
+};
+
+// ---------------------------------------------------------------------
 // Login (unchanged)
 // ---------------------------------------------------------------------
 

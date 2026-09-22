@@ -214,4 +214,47 @@ exports.getMyRevenue = async (req, res) => {
   }
 };
 
+exports.changePassword = async (req, res) => {
+  const { currentPassword, newPassword } = req.body;
+
+  if (!currentPassword || !newPassword) {
+    return res
+      .status(400)
+      .json({ message: "Current and new password are required." });
+  }
+  if (newPassword.length < 6) {
+    return res
+      .status(400)
+      .json({ message: "New password must be at least 6 characters." });
+  }
+
+  try {
+    const rows = await db.query(
+      "SELECT password FROM resort_owners WHERE id = $1",
+      [req.userId],
+    );
+    if (rows.length === 0) {
+      return res.status(404).json({ message: "Account not found." });
+    }
+
+    const isMatch = await bcrypt.compare(currentPassword, rows[0].password);
+    if (!isMatch) {
+      return res
+        .status(400)
+        .json({ message: "Current password is incorrect." });
+    }
+
+    const passwordHash = await bcrypt.hash(newPassword, 10);
+    await db.query("UPDATE resort_owners SET password = $1 WHERE id = $2", [
+      passwordHash,
+      req.userId,
+    ]);
+
+    res.json({ message: "Password changed successfully." });
+  } catch (err) {
+    console.error("Error changing owner password:", err);
+    res.status(500).json({ message: "Server error while changing password." });
+  }
+};
+
 exports.ensureOwnerAccount = ensureOwnerAccount;

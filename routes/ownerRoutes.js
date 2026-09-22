@@ -28,5 +28,11 @@ router.get(
   requireOwner,
   ownerController.getMyRevenue,
 );
+router.put(
+  "/owner/change-password",
+  verifyToken,
+  requireOwner,
+  ownerController.changePassword,
+);
 
 module.exports = router;
