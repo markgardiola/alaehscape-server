@@ -15,6 +15,7 @@ const stayTypeRoutes = require("./routes/stayTypeRoutes");
 const destinationRoutes = require("./routes/destinationRoutes");
 const analyticsRoutes = require("./routes/analyticsRoutes");
 const ownerRoutes = require("./routes/ownerRoutes");
+const chatbotRoutes = require("./routes/chatbotRoutes");
 
 const port = process.env.PORT || 5000;
 
@@ -51,5 +52,6 @@ app.use("/api", stayTypeRoutes);
 app.use("/api", destinationRoutes);
 app.use("/api", analyticsRoutes);
 app.use("/api", ownerRoutes);
+app.use("/api", chatbotRoutes);
 
 app.listen(port, () => console.log(`Server running on port ${port}`));
