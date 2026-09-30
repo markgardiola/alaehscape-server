@@ -2,7 +2,29 @@ const { GoogleGenAI } = require("@google/genai");
 const { getToolsFor, executeTool } = require("../utils/chatbotTools");
 
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
-const MODEL = process.env.CHATBOT_MODEL || "gemini-3.8-flash";
+const MODEL = process.env.CHATBOT_MODEL || "gemini-3.5-flash-lite";
+
+// Computed fresh per request (not at module load) so it's never stale --
+// the model has no built-in sense of "today" and will otherwise guess
+// from training data, which is exactly what produced "tomorrow, May 18,
+// 2025" instead of the real date.
+function getManilaDateContext() {
+  const now = new Date();
+  const iso = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Manila",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(now); // en-CA locale conveniently formats as YYYY-MM-DD
+  const readable = new Intl.DateTimeFormat("en-US", {
+    timeZone: "Asia/Manila",
+    weekday: "long",
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+  }).format(now);
+  return { iso, readable };
+}
 
 const SYSTEM_PROMPT = `You are SandyAI, the professional virtual front desk assistant for ALAI-eh, a beach resort booking website.
 
@@ -55,6 +77,7 @@ exports.sendMessage = async (req, res) => {
 
   const context = { userId: req.userId };
   const functionDeclarations = getToolsFor(context);
+  const { iso: todayIso, readable: todayReadable } = getManilaDateContext();
 
   // Gemini's `contents` plays the role Claude's `messages` did, but roles
   // are "user"/"model" (not "assistant"), and there's no top-level
@@ -68,7 +91,9 @@ exports.sendMessage = async (req, res) => {
   ];
 
   const config = {
-    systemInstruction: SYSTEM_PROMPT,
+    systemInstruction: `${SYSTEM_PROMPT}
+
+    Today's date is ${todayReadable} (${todayIso}), Philippine time. Resolve relative dates like "today", "tomorrow", "next Friday", or "this weekend" against this date -- never assume a different year or guess. Always pass check_availability a resolved ISO date (YYYY-MM-DD), never a relative phrase like "tomorrow".`,
     tools: [{ functionDeclarations }],
   };
 
